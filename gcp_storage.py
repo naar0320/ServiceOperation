@@ -25,6 +25,7 @@ BUCKET_NAME = os.getenv("GCP_BUCKET_NAME", "ammar-builders-maintenance")
 
 # Remote paths in GCS
 REMOTE_DB_PATH = "databases/task_reports.db"
+REMOTE_REGDATA_PATH = "databases/regdata.db"
 REMOTE_IMAGES_PREFIX = "images"
 
 
@@ -255,4 +256,86 @@ def check_gcs_connection() -> bool:
         return True
     except Exception as e:
         st.error(f"❌ GCS Connection Error: {e}")
+        return False
+
+
+# ======================================
+# RegData Database Operations
+# ======================================
+def download_regdata():
+    """Download regdata.db from Google Cloud Storage"""
+    try:
+        bucket = get_bucket()
+        blob = bucket.blob(REMOTE_REGDATA_PATH)
+        
+        # Check if file exists
+        if not blob.exists():
+            return None
+        
+        # Download to bytes
+        db_bytes = blob.download_as_bytes()
+        
+        # Write bytes to temporary file
+        temp_regdata_path = Path("/tmp/regdata_temp.db")
+        temp_regdata_path.write_bytes(db_bytes)
+        
+        return temp_regdata_path
+        
+    except Exception as e:
+        st.error(f"❌ Failed to download regdata: {e}")
+        return None
+
+
+def upload_regdata(local_path: Path) -> bool:
+    """Upload regdata.db to Google Cloud Storage"""
+    try:
+        if not local_path.exists():
+            st.error(f"❌ regdata.db not found at {local_path}")
+            return False
+        
+        bucket = get_bucket()
+        blob = bucket.blob(REMOTE_REGDATA_PATH)
+        
+        # Upload file
+        blob.upload_from_filename(str(local_path))
+        st.success("✅ regdata.db uploaded to Google Cloud!")
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Failed to upload regdata: {e}")
+        return False
+
+
+def sync_regdata_to_gcs(local_path: Path) -> bool:
+    """Sync local regdata.db to Google Cloud Storage"""
+    try:
+        if not local_path.exists():
+            return False
+        
+        # Upload to GCS
+        bucket = get_bucket()
+        blob = bucket.blob(REMOTE_REGDATA_PATH)
+        blob.upload_from_filename(str(local_path))
+        
+        return True
+    except Exception:
+        return False
+
+
+def sync_regdata_from_gcs(local_path: Path) -> bool:
+    """Sync regdata.db from Google Cloud Storage to local"""
+    try:
+        bucket = get_bucket()
+        blob = bucket.blob(REMOTE_REGDATA_PATH)
+        
+        if not blob.exists():
+            return False
+        
+        # Download and save
+        db_bytes = blob.download_as_bytes()
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(db_bytes)
+        
+        return True
+    except Exception:
         return False

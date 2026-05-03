@@ -1,11 +1,5 @@
-streamlit
-pandas
-plotly
-fastapi
-uvicorn
-PyJWT
-python-multipart
-opencv-python-headless
-reportlab
-pyPDF2
-google-cloud-storage
+streamlit>=1.28.0
+pandas>=2.0.0
+google-cloud-storage>=2.10.0
+PyJWT>=2.8.0
+openpyxl>=3.1.0
