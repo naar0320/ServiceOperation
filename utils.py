@@ -180,7 +180,7 @@ def render_role_navigation(auth: Dict[str, Any]) -> None:
     rank = auth.get("rank", 1)
     
     if rank >= 1:
-        st.sidebar.page_link("Home.py", label="?? Dashboard")
+        st.sidebar.page_link("Home.py", label=" Dashboard")
     if rank >= 2:
         st.sidebar.page_link("pages/1_TaskUpdate.py", label="Task Update")
     if rank >= 3:
