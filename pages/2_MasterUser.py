@@ -2,8 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from utils import require_login, render_role_navigation
-from gcp_storage import download_database
-import sqlite3
+from gcp_storage import download_database, list_uploaded_data
 
 st.set_page_config(page_title="Review Reports", page_icon="📋", layout="wide")
 
@@ -155,6 +154,25 @@ try:
                 data=excel_buffer.getvalue(),
                 file_name="task_reports_export.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # ======================================
+        # READ ALL UPLOADED DATA
+        # ======================================
+        st.markdown("---")
+        st.markdown("### ☁️ Uploaded Data (All Files)")
+        uploaded_objects = list_uploaded_data()
+        if not uploaded_objects:
+            st.info("No uploaded files found in storage.")
+        else:
+            uploaded_df = pd.DataFrame(uploaded_objects)
+            st.dataframe(uploaded_df, use_container_width=True, hide_index=True)
+            upload_csv = uploaded_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Uploaded Data List (CSV)",
+                data=upload_csv,
+                file_name="uploaded_data_list.csv",
+                mime="text/csv"
             )
 
 except Exception as e:
