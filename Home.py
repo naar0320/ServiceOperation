@@ -9,7 +9,7 @@ st.set_page_config(page_title="Maintenance Dashboard", page_icon="??", layout="w
 # Login here only unlocks edit pages.
 render_home_auth_controls()
 
-st.title("?? Maintenance Dashboard")
+st.title("🛠️Maintenance Dashboard")
 st.markdown("---")
 
 # ======================================
@@ -19,7 +19,7 @@ try:
     df = download_database()
     
     if df is None or df.empty:
-        st.warning("?? No task reports yet")
+        st.warning("⚠️No task reports yet")
     else:
         # Get task statistics
         pending_count = 0
@@ -35,18 +35,18 @@ try:
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("? Pending Tasks", pending_count)
+            st.metric("📌 Pending Tasks", pending_count)
         
         with col2:
-            st.metric("?? In Progress", in_progress_count)
+            st.metric("👷‍♂️ In Progress", in_progress_count)
         
         with col3:
-            st.metric("? Completed", completed_count)
+            st.metric("🚩Completed", completed_count)
         
         st.markdown("---")
         
         # Show recent tasks
-        st.markdown("## ?? Recent Tasks")
+        st.markdown("## ⌚Recent Tasks")
         
         if len(df) > 0:
             # Get latest 10 tasks
