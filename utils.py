@@ -135,11 +135,19 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
     """
     auth = get_auth_user(optional=True)
     st.sidebar.markdown("---")
+    st.sidebar.markdown("### Navigation")
+    st.sidebar.page_link("Home.py", label="Home")
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### Account")
 
     if auth:
         st.sidebar.success(f"Logged in: {auth.get('name', 'User')}")
         st.sidebar.caption(f"Rank: {auth.get('rank', 1)}")
+        rank = int(auth.get("rank", 1) or 1)
+        if rank >= 2:
+            st.sidebar.page_link("pages/1_TaskUpdate.py", label="Task Update")
+        if rank >= 3:
+            st.sidebar.page_link("pages/2_MasterUser.py", label="Master User")
         if st.sidebar.button("Logout"):
             _clear_auth_state()
             st.rerun()
@@ -165,7 +173,7 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
                 }
                 st.sidebar.success("Login successful")
                 st.rerun()
-    st.sidebar.info("You can view Home without login. Login is required for edit pages.")
+    st.sidebar.info("Home is available without login. Login to access additional pages.")
     return None
 
 
@@ -180,11 +188,11 @@ def render_role_navigation(auth: Dict[str, Any]) -> None:
     rank = auth.get("rank", 1)
     
     if rank >= 1:
-        st.sidebar.page_link("Home.py", label=" Dashboard")
+        st.sidebar.page_link("Home.py", label="Home")
     if rank >= 2:
         st.sidebar.page_link("pages/1_TaskUpdate.py", label="Task Update")
     if rank >= 3:
-        st.sidebar.page_link("pages/2_MasterUser.py", label=" Review Reports")
+        st.sidebar.page_link("pages/2_MasterUser.py", label="Master User")
 
 
 # ======================================
