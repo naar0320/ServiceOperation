@@ -162,90 +162,102 @@ try:
         readable_df = _sorted_task_view(df)
 
         # ======================================
-        # DETAILED JOB VIEW (SIDEBAR)
+        # MAIN TABS
         # ======================================
-        st.sidebar.markdown("### 🔍 View Job Details")
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📄 View Job Details", 
+            "📋 All Reports", 
+            "🔍 Filter by Status", 
+            "🔎 Search", 
+            "☁️ Cloud Storage"
+        ])
         
-        job_ids = ["---Select Job---"] + sorted([str(jid) for jid in df["Job ID"].dropna().unique().tolist()])
-        selected_job_id = st.sidebar.selectbox("Select Job ID", job_ids, key="job_selector")
-        
-        if selected_job_id != "---Select Job---":
-            # Get job data
-            job_row = df[df["Job ID"] == selected_job_id]
+        # ======================================
+        # TAB 1: VIEW JOB DETAILS
+        # ======================================
+        with tab1:
+            st.markdown("### 📄 View Complete Job Report with Images")
             
-            if not job_row.empty:
-                job_data = job_row.iloc[0].to_dict()
-                images_list = list_images_for_job(selected_job_id)
+            job_ids = ["---Select a Job ID---"] + sorted([str(jid) for jid in df["Job ID"].dropna().unique().tolist()])
+            selected_job_id = st.selectbox("Select Job ID to View", job_ids, key="job_selector", label_visibility="collapsed")
+            
+            if selected_job_id != "---Select a Job ID---":
+                job_row = df[df["Job ID"] == selected_job_id]
                 
-                # Show detailed view in main area
-                with st.container():
+                if not job_row.empty:
+                    job_data = job_row.iloc[0].to_dict()
+                    images_list = list_images_for_job(selected_job_id)
+                    
+                    # Header
+                    st.markdown(f"## 📋 Job Report: **{selected_job_id}**")
                     st.markdown("---")
-                    st.markdown(f"## 📄 Job Details: {selected_job_id}")
                     
-                    # Create tabs for details and images
-                    detail_tab1, detail_tab2 = st.tabs(["Job Information", "📸 Images"])
+                    # Create columns for job details
+                    st.markdown("### Job Information")
                     
-                    with detail_tab1:
-                        # Display all job fields
-                        col1, col2 = st.columns(2)
-                        
-                        field_items = list(job_data.items())
-                        for idx, (key, value) in enumerate(field_items):
-                            if not str(key).startswith('__'):
-                                if idx % 2 == 0:
-                                    col = col1
-                                else:
-                                    col = col2
-                                
-                                with col:
+                    # Organize fields into groups
+                    detail_cols = st.columns(3)
+                    col_idx = 0
+                    
+                    for key, value in job_data.items():
+                        if not str(key).startswith('__'):
+                            with detail_cols[col_idx % 3]:
+                                with st.container(border=True):
                                     st.markdown(f"**{key}**")
-                                    st.write(str(value)[:500])
-                                    st.markdown("")
+                                    st.write(str(value)[:300] if len(str(value)) > 300 else value)
+                            col_idx += 1
+                    
+                    st.markdown("---")
+                    
+                    # Images Section
+                    st.markdown("### 📸 Uploaded Images")
+                    
+                    if images_list:
+                        st.success(f"✅ {len(images_list)} image(s) found for this job")
                         
-                        # PDF Download button
-                        pdf_buffer = _generate_pdf_report(job_data, images_list)
-                        if pdf_buffer:
+                        img_cols = st.columns(2)
+                        for idx, img_path in enumerate(images_list):
+                            try:
+                                img_bytes = download_image(img_path)
+                                if img_bytes:
+                                    with img_cols[idx % 2]:
+                                        with st.container(border=True):
+                                            st.image(img_bytes, use_container_width=True, caption=img_path.split('/')[-1])
+                                            st.download_button(
+                                                label="📥 Download Image",
+                                                data=img_bytes,
+                                                file_name=img_path.split('/')[-1],
+                                                mime="image/jpeg",
+                                                key=f"img_dl_{idx}",
+                                                use_container_width=True
+                                            )
+                            except Exception as e:
+                                st.warning(f"❌ Could not load: {img_path}")
+                    else:
+                        st.info("📭 No images uploaded for this job")
+                    
+                    st.markdown("---")
+                    
+                    # PDF Export
+                    st.markdown("### 💾 Export Report")
+                    pdf_buffer = _generate_pdf_report(job_data, images_list)
+                    if pdf_buffer:
+                        col1, col2, col3 = st.columns([1, 1, 2])
+                        with col1:
                             st.download_button(
-                                label="📥 Download Report as PDF",
+                                label="📥 Download as PDF",
                                 data=pdf_buffer,
                                 file_name=f"job_report_{selected_job_id}.pdf",
-                                mime="application/pdf"
+                                mime="application/pdf",
+                                use_container_width=True
                             )
-                    
-                    with detail_tab2:
-                        if images_list:
-                            st.success(f"✅ Found {len(images_list)} image(s)")
-                            
-                            for idx, img_path in enumerate(images_list, 1):
-                                try:
-                                    img_bytes = download_image(img_path)
-                                    if img_bytes:
-                                        with st.container(border=True):
-                                            col_img, col_info = st.columns([3, 1])
-                                            with col_img:
-                                                st.image(img_bytes, caption=f"Image {idx}: {img_path.split('/')[-1]}", use_container_width=True)
-                                            with col_info:
-                                                st.download_button(
-                                                    label="⬇️ Download",
-                                                    data=img_bytes,
-                                                    file_name=img_path.split('/')[-1],
-                                                    mime="image/jpeg",
-                                                    key=f"img_{idx}"
-                                                )
-                                except Exception as e:
-                                    st.warning(f"Could not load image: {img_path}")
-                        else:
-                            st.info("📭 No images uploaded for this job")
-                    
-                    st.markdown("---")
+            else:
+                st.info("👆 Please select a Job ID from the dropdown above to view details")
         
         # ======================================
-        # TABS FOR FILTERING
+        # TAB 2: ALL REPORTS
         # ======================================
-        st.markdown("## 📊 All Reports View")
-        tab1, tab2, tab3 = st.tabs(["All Reports", "Filter by Status", "Search"])
-        
-        with tab1:
+        with tab2:
             st.markdown("### All Task Reports (Readable Order)")
             st.caption("Sorted by status, priority, then latest created time.")
             st.dataframe(readable_df, use_container_width=True, hide_index=True)
@@ -259,7 +271,7 @@ try:
                 mime="text/csv"
             )
         
-        with tab2:
+        with tab3:
             st.markdown("### Filter by Job Status")
             
             status_options = ["All"]
@@ -289,7 +301,7 @@ try:
                 mime="text/csv"
             )
         
-        with tab3:
+        with tab4:
             st.markdown("### Search Reports")
             
             search_col = st.selectbox(
@@ -317,7 +329,30 @@ try:
                     st.warning(f"Column '{search_col}' not found")
         
         # ======================================
-        # STATISTICS SUMMARY
+        # TAB 5: CLOUD STORAGE
+        # ======================================
+        with tab5:
+            st.markdown("### ☁️ Uploaded Data (All Files in GCS)")
+            uploaded_objects = list_uploaded_data()
+            if not uploaded_objects:
+                st.info("No uploaded files found in storage.")
+            else:
+                uploaded_df = pd.DataFrame(uploaded_objects)
+                if "Updated" in uploaded_df.columns:
+                    uploaded_df["__updated_sort"] = pd.to_datetime(uploaded_df["Updated"], errors="coerce")
+                    uploaded_df = uploaded_df.sort_values(by="__updated_sort", ascending=False, na_position="last")
+                    uploaded_df = uploaded_df.drop(columns=["__updated_sort"])
+                st.dataframe(uploaded_df, use_container_width=True, hide_index=True)
+                upload_csv = uploaded_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Uploaded Data List (CSV)",
+                    data=upload_csv,
+                    file_name="uploaded_data_list.csv",
+                    mime="text/csv"
+                )
+        
+        # ======================================
+        # STATISTICS SUMMARY (BELOW TABS)
         # ======================================
         st.markdown("---")
         st.markdown("### 📊 Summary Statistics")
@@ -347,61 +382,6 @@ try:
                 st.metric("Completed", completed)
             else:
                 st.metric("Completed", "-")
-        
-        # ======================================
-        # EXPORT DATABASE
-        # ======================================
-        st.markdown("---")
-        st.markdown("### 💾 Export Options")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Export as CSV
-            csv = readable_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Export as CSV",
-                data=csv,
-                file_name="task_reports_export.csv",
-                mime="text/csv"
-            )
-        
-        with col2:
-            # Export as Excel
-            excel_buffer = BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                readable_df.to_excel(writer, sheet_name='Task Reports', index=False)
-            excel_buffer.seek(0)
-            
-            st.download_button(
-                label="📥 Export as Excel",
-                data=excel_buffer.getvalue(),
-                file_name="task_reports_export.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-        # ======================================
-        # READ ALL UPLOADED DATA
-        # ======================================
-        st.markdown("---")
-        st.markdown("### ☁️ Uploaded Data (All Files)")
-        uploaded_objects = list_uploaded_data()
-        if not uploaded_objects:
-            st.info("No uploaded files found in storage.")
-        else:
-            uploaded_df = pd.DataFrame(uploaded_objects)
-            if "Updated" in uploaded_df.columns:
-                uploaded_df["__updated_sort"] = pd.to_datetime(uploaded_df["Updated"], errors="coerce")
-                uploaded_df = uploaded_df.sort_values(by="__updated_sort", ascending=False, na_position="last")
-                uploaded_df = uploaded_df.drop(columns=["__updated_sort"])
-            st.dataframe(uploaded_df, use_container_width=True, hide_index=True)
-            upload_csv = uploaded_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Uploaded Data List (CSV)",
-                data=upload_csv,
-                file_name="uploaded_data_list.csv",
-                mime="text/csv"
-            )
 
 except Exception as e:
     st.error(f"❌ Error loading reports: {e}")
