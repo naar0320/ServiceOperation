@@ -177,6 +177,18 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
     return None
 
 
+def hide_default_sidebar_navigation() -> None:
+    """Hide Streamlit's built-in multipage nav to avoid duplicate menus."""
+    st.markdown(
+        """
+        <style>
+            [data-testid="stSidebarNav"] {display: none;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_role_navigation(auth: Dict[str, Any]) -> None:
     """Display navigation menu based on user role"""
     st.sidebar.markdown("---")

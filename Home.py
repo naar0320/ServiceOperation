@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
-from utils import render_home_auth_controls
+from utils import hide_default_sidebar_navigation, render_home_auth_controls
 from gcp_storage import download_database
 
 st.set_page_config(page_title="Maintenance Dashboard", page_icon="??", layout="wide")
+hide_default_sidebar_navigation()
 
 # Home page is accessible without login.
 # Login here only unlocks edit pages.
