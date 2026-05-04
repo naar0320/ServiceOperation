@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from utils import hide_default_sidebar_navigation, require_login, render_role_navigation
-from gcp_storage import download_database, list_uploaded_data
+from datetime import datetime
+from utils import hide_default_sidebar_navigation, require_login, render_role_navigation, format_ts_sg
+from gcp_storage import download_database, list_uploaded_data, download_image, list_images_for_job
 
 st.set_page_config(page_title="Review Reports", page_icon="📋", layout="wide")
 hide_default_sidebar_navigation()
@@ -13,6 +14,87 @@ render_role_navigation(auth)
 
 st.title("📋 Review & Download Reports")
 st.markdown("---")
+
+
+def _generate_pdf_report(job_data: dict, images_list: list) -> BytesIO:
+    """Generate PDF report with job details and images"""
+    try:
+        from reportlab.lib.pagesizes import letter, A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage, PageBreak
+        from reportlab.lib import colors
+        
+        pdf_buffer = BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, leftMargin=0.5*inch, rightMargin=0.5*inch, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor=colors.HexColor('#1f77b4'),
+            spaceAfter=12,
+            alignment=1
+        )
+        elements.append(Paragraph("📋 Job Report", title_style))
+        elements.append(Spacer(1, 0.2*inch))
+        
+        # Job Details Section
+        details_data = []
+        for key, value in job_data.items():
+            if not str(key).startswith('__'):
+                details_data.append([str(key), str(value)[:100]])
+        
+        if details_data:
+            details_table = Table(details_data, colWidths=[2*inch, 3.5*inch])
+            details_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f0f0f0')),
+                ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ]))
+            elements.append(details_table)
+            elements.append(Spacer(1, 0.3*inch))
+        
+        # Images Section
+        if images_list:
+            elements.append(Paragraph("📸 Uploaded Images", styles['Heading2']))
+            elements.append(Spacer(1, 0.1*inch))
+            
+            for img_path in images_list:
+                try:
+                    img_bytes = download_image(img_path)
+                    if img_bytes:
+                        img_buffer = BytesIO(img_bytes)
+                        rl_image = RLImage(img_buffer, width=3*inch, height=2*inch)
+                        elements.append(rl_image)
+                        elements.append(Paragraph(f"<font size=8>{img_path.split('/')[-1]}</font>", styles['Normal']))
+                        elements.append(Spacer(1, 0.2*inch))
+                except Exception:
+                    pass
+        
+        # Footer
+        elements.append(Spacer(1, 0.3*inch))
+        footer_text = f"Generated on {format_ts_sg()} | Ammar Builders Maintenance System"
+        elements.append(Paragraph(f"<font size=8 color='gray'>{footer_text}</font>", styles['Normal']))
+        
+        doc.build(elements)
+        pdf_buffer.seek(0)
+        return pdf_buffer
+        
+    except ImportError:
+        st.error("❌ reportlab not installed. Please install: pip install reportlab")
+        return None
+    except Exception as e:
+        st.error(f"❌ PDF generation error: {e}")
+        return None
 
 
 def _priority_score(value: str) -> int:
@@ -80,8 +162,87 @@ try:
         readable_df = _sorted_task_view(df)
 
         # ======================================
+        # DETAILED JOB VIEW (SIDEBAR)
+        # ======================================
+        st.sidebar.markdown("### 🔍 View Job Details")
+        
+        job_ids = ["---Select Job---"] + sorted([str(jid) for jid in df["Job ID"].dropna().unique().tolist()])
+        selected_job_id = st.sidebar.selectbox("Select Job ID", job_ids, key="job_selector")
+        
+        if selected_job_id != "---Select Job---":
+            # Get job data
+            job_row = df[df["Job ID"] == selected_job_id]
+            
+            if not job_row.empty:
+                job_data = job_row.iloc[0].to_dict()
+                images_list = list_images_for_job(selected_job_id)
+                
+                # Show detailed view in main area
+                with st.container():
+                    st.markdown("---")
+                    st.markdown(f"## 📄 Job Details: {selected_job_id}")
+                    
+                    # Create tabs for details and images
+                    detail_tab1, detail_tab2 = st.tabs(["Job Information", "📸 Images"])
+                    
+                    with detail_tab1:
+                        # Display all job fields
+                        col1, col2 = st.columns(2)
+                        
+                        field_items = list(job_data.items())
+                        for idx, (key, value) in enumerate(field_items):
+                            if not str(key).startswith('__'):
+                                if idx % 2 == 0:
+                                    col = col1
+                                else:
+                                    col = col2
+                                
+                                with col:
+                                    st.markdown(f"**{key}**")
+                                    st.write(str(value)[:500])
+                                    st.markdown("")
+                        
+                        # PDF Download button
+                        pdf_buffer = _generate_pdf_report(job_data, images_list)
+                        if pdf_buffer:
+                            st.download_button(
+                                label="📥 Download Report as PDF",
+                                data=pdf_buffer,
+                                file_name=f"job_report_{selected_job_id}.pdf",
+                                mime="application/pdf"
+                            )
+                    
+                    with detail_tab2:
+                        if images_list:
+                            st.success(f"✅ Found {len(images_list)} image(s)")
+                            
+                            for idx, img_path in enumerate(images_list, 1):
+                                try:
+                                    img_bytes = download_image(img_path)
+                                    if img_bytes:
+                                        with st.container(border=True):
+                                            col_img, col_info = st.columns([3, 1])
+                                            with col_img:
+                                                st.image(img_bytes, caption=f"Image {idx}: {img_path.split('/')[-1]}", use_container_width=True)
+                                            with col_info:
+                                                st.download_button(
+                                                    label="⬇️ Download",
+                                                    data=img_bytes,
+                                                    file_name=img_path.split('/')[-1],
+                                                    mime="image/jpeg",
+                                                    key=f"img_{idx}"
+                                                )
+                                except Exception as e:
+                                    st.warning(f"Could not load image: {img_path}")
+                        else:
+                            st.info("📭 No images uploaded for this job")
+                    
+                    st.markdown("---")
+        
+        # ======================================
         # TABS FOR FILTERING
         # ======================================
+        st.markdown("## 📊 All Reports View")
         tab1, tab2, tab3 = st.tabs(["All Reports", "Filter by Status", "Search"])
         
         with tab1:
