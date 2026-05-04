@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from utils import require_login, render_role_navigation
+from utils import hide_default_sidebar_navigation, require_login, render_role_navigation
 from gcp_storage import download_database, list_uploaded_data
 
 st.set_page_config(page_title="Review Reports", page_icon="📋", layout="wide")
+hide_default_sidebar_navigation()
 
 # Require Master/Admin level access
 auth = require_login(min_level_rank=3)

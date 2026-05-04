@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 from datetime import date
 from utils import (
+    hide_default_sidebar_navigation,
     require_login,
     render_role_navigation,
     show_user_error,
@@ -16,6 +17,7 @@ from gcp_storage import (
 )
 
 st.set_page_config(page_title="Task Update", page_icon="🔧", layout="wide")
+hide_default_sidebar_navigation()
 auth = require_login(min_level_rank=2)
 render_role_navigation(auth)
 
