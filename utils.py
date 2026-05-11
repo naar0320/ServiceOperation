@@ -145,7 +145,7 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
         st.sidebar.caption(f"Rank: {auth.get('rank', 1)}")
         rank = int(auth.get("rank", 1) or 1)
         if rank >= 2:
-            st.sidebar.page_link("pages/1_TaskUpdate.py", label="Task Update")
+            st.sidebar.page_link("pages/3_JobEntry.py", label="Job Entry")
         if rank >= 3:
             st.sidebar.page_link("pages/2_MasterUser.py", label="Master User")
         if st.sidebar.button("Logout"):
@@ -202,7 +202,7 @@ def render_role_navigation(auth: Dict[str, Any]) -> None:
     if rank >= 1:
         st.sidebar.page_link("Home.py", label="Home")
     if rank >= 2:
-        st.sidebar.page_link("pages/1_TaskUpdate.py", label="Task Update")
+        st.sidebar.page_link("pages/3_JobEntry.py", label="Job Entry")
     if rank >= 3:
         st.sidebar.page_link("pages/2_MasterUser.py", label="Master User")
 
