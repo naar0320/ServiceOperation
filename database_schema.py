@@ -1,35 +1,51 @@
 """
 Database Schema for Job Task Report System
-Defines the structure for enhanced job tracking with new fields
+Based on 3_JobEntry.py form fields
 """
 
 import sqlite3
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
-# Database schema definition
+# Database schema definition - extracted from 3_JobEntry.py form
 JOB_TASK_SCHEMA = {
     "job_tasks": {
         "columns": {
-            "job_id": {"type": "TEXT PRIMARY KEY", "description": "Auto-generated Job ID (YYMMDD_M_NNN)"},
-            "created_by": {"type": "TEXT NOT NULL", "description": "User ID of creator"},
-            "created_at": {"type": "TIMESTAMP NOT NULL", "description": "Creation timestamp"},
-            "job_type": {"type": "TEXT NOT NULL", "description": "Maintenance/Repair/Inspection"},
-            "job_class": {"type": "TEXT NOT NULL", "description": "Electrical/Mechanical/Civil/General"},
+            # Auto-generated fields
+            "job_id": {"type": "TEXT PRIMARY KEY", "description": "Auto-generated unique job ID"},
+            "created_by": {"type": "TEXT NOT NULL", "description": "User ID who created the job entry"},
+            "created_at": {"type": "TIMESTAMP NOT NULL", "description": "When the entry was created"},
+            
+            # Section 2: Job Type & Class
+            "job_type": {"type": "TEXT NOT NULL", "description": "Job Type: Maintenance, Repair, or Inspection"},
+            "job_class": {"type": "TEXT NOT NULL", "description": "Job Class: Electrical, Mechanical, Civil, or General"},
+            
+            # Section 2 & 3: Job Duration
             "date_start": {"type": "DATE NOT NULL", "description": "Job start date"},
             "time_start": {"type": "TIME NOT NULL", "description": "Job start time"},
-            "date_end": {"type": "DATE", "description": "Job end date"},
-            "time_end": {"type": "TIME", "description": "Job end time"},
-            "technician": {"type": "TEXT NOT NULL", "description": "Assigned technician from regdata"},
-            "job_title": {"type": "TEXT NOT NULL", "description": "Job title (max 40 words)"},
+            "date_end": {"type": "DATE", "description": "Job end date (optional)"},
+            "time_end": {"type": "TIME", "description": "Job end time (optional)"},
+            
+            # Section 4: Personnel
+            "technician": {"type": "TEXT NOT NULL", "description": "Assigned technician from registered users"},
+            "verify_by": {"type": "TEXT", "description": "Name/ID of person who verifies the job (optional)"},
+            
+            # Section 5: Job Description
+            "job_title": {"type": "TEXT NOT NULL", "description": "Brief job title (max 40 words)"},
             "job_details": {"type": "TEXT", "description": "Detailed job description (max 300 words)"},
             "remark": {"type": "TEXT", "description": "Additional remarks (max 100 words)"},
-            "job_status": {"type": "TEXT NOT NULL", "description": "Pending/Inprogress/Completed"},
-            "verify_by": {"type": "TEXT", "description": "Verified by user"},
-            "images_before_paths": {"type": "TEXT", "description": "CSV of image paths (min 4)"},
-            "images_after_paths": {"type": "TEXT", "description": "CSV of image paths (min 4)"},
-            "last_modified": {"type": "TIMESTAMP", "description": "Last modification timestamp"},
-            "last_modified_by": {"type": "TEXT", "description": "Last user to modify"},
+            
+            # Section 6: Job Status
+            "job_status": {"type": "TEXT NOT NULL", "description": "Status: Pending, Inprogress, or Completed"},
+            
+            # Section 8 & 9: Images
+            "images_before_paths": {"type": "TEXT", "description": "CSV of 'before' image paths (minimum 4)"},
+            "images_after_paths": {"type": "TEXT", "description": "CSV of 'after' image paths (minimum 4)"},
+            
+            # Metadata
+            "last_modified": {"type": "TIMESTAMP", "description": "When the entry was last modified"},
+            "last_modified_by": {"type": "TEXT", "description": "User ID of last modifier"},
         },
         "indexes": [
             "CREATE INDEX IF NOT EXISTS idx_job_id ON job_tasks(job_id)",
@@ -40,11 +56,11 @@ JOB_TASK_SCHEMA = {
     },
     "spare_parts": {
         "columns": {
-            "spare_id": {"type": "INTEGER PRIMARY KEY AUTOINCREMENT", "description": "Unique ID"},
-            "job_id": {"type": "TEXT NOT NULL", "description": "Reference to job_tasks"},
-            "item_name": {"type": "TEXT NOT NULL", "description": "Name of spare part"},
-            "quantity": {"type": "INTEGER NOT NULL", "description": "Quantity used"},
-            "created_at": {"type": "TIMESTAMP NOT NULL", "description": "Creation timestamp"},
+            "spare_id": {"type": "INTEGER PRIMARY KEY AUTOINCREMENT", "description": "Unique spare part ID"},
+            "job_id": {"type": "TEXT NOT NULL", "description": "Reference to parent job_tasks.job_id"},
+            "item_name": {"type": "TEXT NOT NULL", "description": "Name of spare part used"},
+            "quantity": {"type": "INTEGER NOT NULL", "description": "Quantity of this item used"},
+            "created_at": {"type": "TIMESTAMP NOT NULL", "description": "When spare part entry was created"},
         },
         "indexes": [
             "CREATE INDEX IF NOT EXISTS idx_spare_job_id ON spare_parts(job_id)",
@@ -52,9 +68,10 @@ JOB_TASK_SCHEMA = {
     }
 }
 
+
 def init_database(db_path: Path) -> bool:
     """
-    Initialize or update the database with the new schema
+    Initialize or update the database with the schema
     
     Args:
         db_path: Path to the SQLite database file
@@ -63,6 +80,7 @@ def init_database(db_path: Path) -> bool:
         bool: True if successful, False otherwise
     """
     try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
         
@@ -77,7 +95,7 @@ def init_database(db_path: Path) -> bool:
             )
         """)
         
-        # Create spare_parts table
+        # Create spare_parts table with foreign key
         spare_parts_cols = ", ".join([
             f"{col_name} {col_info['type']}"
             for col_name, col_info in JOB_TASK_SCHEMA["spare_parts"]["columns"].items()
@@ -89,7 +107,7 @@ def init_database(db_path: Path) -> bool:
             )
         """)
         
-        # Create indexes
+        # Create all indexes
         for index_sql in JOB_TASK_SCHEMA["job_tasks"]["indexes"]:
             cursor.execute(index_sql)
         for index_sql in JOB_TASK_SCHEMA["spare_parts"]["indexes"]:
@@ -98,74 +116,81 @@ def init_database(db_path: Path) -> bool:
         conn.commit()
         conn.close()
         return True
-        
     except Exception as e:
-        print(f"❌ Error initializing database: {e}")
+        print(f"Error initializing database: {e}")
         return False
 
 
-def get_schema_columns(table_name: str) -> dict:
-    """Get column definitions for a specific table"""
-    return JOB_TASK_SCHEMA.get(table_name, {}).get("columns", {})
-
-
-def get_all_columns() -> list:
-    """Get all column names from job_tasks table"""
-    return list(JOB_TASK_SCHEMA["job_tasks"]["columns"].keys())
-
-
-def validate_job_data(data: dict) -> tuple[bool, str]:
+def validate_job_data(job_data: dict) -> tuple[bool, list]:
     """
-    Validate job data before saving
+    Validate job data before saving to database
     
     Args:
-        data: Dictionary containing job data
+        job_data: Dictionary of job fields
         
     Returns:
-        tuple: (is_valid, error_message)
+        tuple: (is_valid, list of error messages)
     """
-    # Required fields validation
-    required_fields = ["job_type", "job_class", "date_start", "time_start", "technician", "job_title", "job_status"]
+    errors = []
+    
+    # Required fields
+    required_fields = [
+        'job_id', 'created_by', 'created_at',
+        'job_type', 'job_class',
+        'date_start', 'time_start',
+        'technician',
+        'job_title', 'job_status'
+    ]
+    
     for field in required_fields:
-        if not data.get(field):
-            return False, f"Missing required field: {field}"
+        if field not in job_data or not job_data[field]:
+            errors.append(f"Missing required field: {field}")
     
-    # Word count validations
-    job_title_words = len(str(data.get("job_title", "")).split())
-    if job_title_words > 40:
-        return False, f"Job Title exceeds 40 words ({job_title_words})"
+    # Validate job_type
+    if job_data.get('job_type') not in ['', 'Maintenance', 'Repair', 'Inspection']:
+        errors.append("Invalid job_type. Must be: Maintenance, Repair, or Inspection")
     
-    job_details_words = len(str(data.get("job_details", "")).split())
-    if job_details_words > 300:
-        return False, f"Job Details exceeds 300 words ({job_details_words})"
+    # Validate job_class
+    if job_data.get('job_class') not in ['', 'Electrical', 'Mechanical', 'Civil', 'General']:
+        errors.append("Invalid job_class. Must be: Electrical, Mechanical, Civil, or General")
     
-    remark_words = len(str(data.get("remark", "")).split())
-    if remark_words > 100:
-        return False, f"Remark exceeds 100 words ({remark_words})"
+    # Validate job_status
+    if job_data.get('job_status') not in ['', 'Pending', 'Inprogress', 'Completed']:
+        errors.append("Invalid job_status. Must be: Pending, Inprogress, or Completed")
     
-    # Image validations
-    images_before = str(data.get("images_before_paths", "")).split(",")
-    images_before = [img.strip() for img in images_before if img.strip()]
-    if len(images_before) < 4:
-        return False, f"Minimum 4 'Before' images required ({len(images_before)} provided)"
+    # Validate word counts
+    def count_words(text):
+        return len(str(text).strip().split()) if text else 0
     
-    images_after = str(data.get("images_after_paths", "")).split(",")
-    images_after = [img.strip() for img in images_after if img.strip()]
-    if len(images_after) < 4:
-        return False, f"Minimum 4 'After' images required ({len(images_after)} provided)"
+    if count_words(job_data.get('job_title', '')) > 40:
+        errors.append("job_title exceeds 40 words")
     
-    # Job status validation
-    valid_statuses = ["Pending", "Inprogress", "Completed"]
-    if data.get("job_status") not in valid_statuses:
-        return False, f"Invalid Job Status: {data.get('job_status')}"
+    if count_words(job_data.get('job_details', '')) > 300:
+        errors.append("job_details exceeds 300 words")
     
-    # Job type and class validation
-    valid_job_types = ["Maintenance", "Repair", "Inspection"]
-    if data.get("job_type") not in valid_job_types:
-        return False, f"Invalid Job Type: {data.get('job_type')}"
+    if count_words(job_data.get('remark', '')) > 100:
+        errors.append("remark exceeds 100 words")
     
-    valid_job_classes = ["Electrical", "Mechanical", "Civil", "General"]
-    if data.get("job_class") not in valid_job_classes:
-        return False, f"Invalid Job Class: {data.get('job_class')}"
+    # Validate image counts
+    before_images = job_data.get('images_before_paths', '').split(',') if job_data.get('images_before_paths') else []
+    after_images = job_data.get('images_after_paths', '').split(',') if job_data.get('images_after_paths') else []
     
-    return True, "Validation passed"
+    before_count = len([img for img in before_images if img.strip()])
+    after_count = len([img for img in after_images if img.strip()])
+    
+    if before_count < 4:
+        errors.append(f"Need at least 4 'before' images, got {before_count}")
+    
+    if after_count < 4:
+        errors.append(f"Need at least 4 'after' images, got {after_count}")
+    
+    return (len(errors) == 0, errors)
+
+
+def get_database_summary() -> dict:
+    """Get summary of database structure"""
+    return {
+        "tables": list(JOB_TASK_SCHEMA.keys()),
+        "job_tasks_columns": len(JOB_TASK_SCHEMA["job_tasks"]["columns"]),
+        "spare_parts_columns": len(JOB_TASK_SCHEMA["spare_parts"]["columns"]),
+    }
