@@ -87,9 +87,64 @@ def _open_remote_db(remote_path: str) -> sqlite3.Connection | None:
 # ======================================
 # Task Reports Database
 # ======================================
+def _has_legacy_columns(conn: sqlite3.Connection) -> bool:
+    cur = conn.cursor()
+    cur.execute(f'PRAGMA table_info([{TASK_REPORTS_TABLE}])')
+    cols = {r[1] for r in cur.fetchall()}
+    return any(c in cols for c in REMOVED_COLUMNS)
+
+
+def _migrate_sqlite_file(db_path: Path) -> None:
+    """Rewrite SQLite file in-place to drop legacy columns."""
+    conn = sqlite3.connect(str(db_path))
+    if not _has_legacy_columns(conn):
+        conn.close()
+        return
+
+    old_cols = _table_columns(conn)
+    select_parts = []
+    for col in TASK_REPORT_COLUMNS:
+        select_parts.append(f"[{col}]" if col in old_cols else f"'' AS [{col}]")
+
+    create_parts = [f"[{col}] TEXT" for col in TASK_REPORT_COLUMNS]
+    create_parts[TASK_REPORT_COLUMNS.index("Job ID")] = "[Job ID] TEXT PRIMARY KEY"
+
+    conn.execute(f"CREATE TABLE task_reports_new ({', '.join(create_parts)})")
+    conn.execute(
+        f"INSERT INTO task_reports_new SELECT {', '.join(select_parts)} FROM [{TASK_REPORTS_TABLE}]"
+    )
+    conn.execute(f"DROP TABLE [{TASK_REPORTS_TABLE}]")
+    conn.execute("ALTER TABLE task_reports_new RENAME TO task_reports")
+    conn.commit()
+    conn.close()
+
+
+def _table_columns(conn: sqlite3.Connection) -> set:
+    cur = conn.cursor()
+    cur.execute(f'PRAGMA table_info([{TASK_REPORTS_TABLE}])')
+    return {r[1] for r in cur.fetchall()}
+
+
+def _ensure_gcs_schema_current() -> None:
+    """Auto-migrate GCS database if legacy columns still exist."""
+    db_bytes = _download_db_bytes(REMOTE_DB_PATH)
+    if db_bytes is None:
+        return
+    temp_path = _temp_db_path("task_reports_check.db")
+    temp_path.write_bytes(db_bytes)
+    conn = sqlite3.connect(str(temp_path))
+    needs_migration = _has_legacy_columns(conn)
+    conn.close()
+    if needs_migration:
+        _migrate_sqlite_file(temp_path)
+        _upload_db_file(temp_path, REMOTE_DB_PATH)
+    temp_path.unlink(missing_ok=True)
+
+
 def download_database() -> pd.DataFrame:
     """Download task_reports table from GCS."""
     try:
+        _ensure_gcs_schema_current()
         conn = _open_remote_db(REMOTE_DB_PATH)
         if conn is None:
             return pd.DataFrame()
