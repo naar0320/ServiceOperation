@@ -1,468 +1,227 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date, time
+from datetime import datetime
 from pathlib import Path
-from utils import (
-    hide_default_sidebar_navigation,
-    require_login,
-    render_role_navigation,
-    now_sg,
-    today_sg,
-    format_ts_sg,
-    lookup_user_in_regdata,
+
+from database_schema import (
+    JOB_TYPES,
+    SEVERITY_OPTIONS,
+    PRIORITY_OPTIONS,
+    FREQUENCY_OPTIONS,
+    SHIFT_OPTIONS,
+    JOB_STATUS_OPTIONS,
+    validate_task_report,
 )
 from gcp_storage import (
-    download_job_tasks_database,
-    save_job_task,
+    generate_job_id,
+    get_technician_list,
+    get_user_list,
+    save_task_report,
     upload_image,
 )
-from database_schema import validate_job_data, init_database
-import uuid
+from utils import (
+    format_ts_sg,
+    hide_default_sidebar_navigation,
+    now_sg,
+    render_role_navigation,
+    require_login,
+    today_sg,
+)
 
 st.set_page_config(page_title="Job Entry", page_icon="📝", layout="wide")
 hide_default_sidebar_navigation()
 
-# Require Technician level access (rank 2+)
 auth = require_login(min_level_rank=2)
 render_role_navigation(auth)
 
 st.title("📝 Job Task Entry Form")
-st.markdown("#### Create new job task report with complete details")
+st.markdown("Create a new maintenance task report")
 st.markdown("---")
 
-# ======================================
-# HELPER FUNCTIONS
-# ======================================
 
-def _current_user() -> str:
-    """Get current logged-in user"""
-    name = str(auth.get("name", "") or "").strip()
-    user_id = str(auth.get("user_id", "") or "").strip()
-    return name or user_id or "System"
+def _current_user_name() -> str:
+    return str(auth.get("name") or auth.get("user_id") or "System").strip()
 
-def _get_technician_list() -> list:
-    """Get list of technicians from regdata"""
-    try:
-        # Try to load from local regdata.db
-        import sqlite3
-        db_path = Path(__file__).parent / "data" / "regdata.db"
-        if db_path.exists():
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
-            cursor.execute("SELECT display_name, user_id FROM users WHERE level_rank >= 1")
-            results = cursor.fetchall()
-            conn.close()
-            return [f"{name} ({uid})" for name, uid in results] if results else ["No technicians found"]
-    except:
-        pass
-    return ["Technician 1", "Technician 2", "Technician 3"]
 
-def _generate_job_id() -> str:
-    """Generate unique Job ID"""
-    date_str = today_sg().strftime("%y%m%d")
-    prefix = f"{date_str}_J_"
-    unique_suffix = str(uuid.uuid4())[:8].upper()
-    return f"{prefix}{unique_suffix}"
-
-def _count_words(text: str) -> int:
-    """Count words in text"""
-    return len(str(text).strip().split()) if text else 0
-
-def _upload_images(uploaded_files, job_id: str, image_type: str) -> tuple[list, int]:
-    """Upload images to GCS and return paths and count"""
+def _upload_images(uploaded_files, job_id: str, image_type: str) -> list[str]:
     if not uploaded_files:
-        return [], 0
-    
-    saved_paths = []
-    for i, uploaded_file in enumerate(uploaded_files):
+        return []
+    paths = []
+    for i, uploaded_file in enumerate(uploaded_files, start=1):
         try:
+            ext = Path(uploaded_file.name).suffix.lower() or ".jpeg"
             image_bytes = uploaded_file.getbuffer().tobytes()
-            ext = Path(uploaded_file.name).suffix.lower()
-            filename = f"{image_type}_{i+1}{ext}"
-            path = upload_image(image_bytes, job_id, image_type, filename)
+            path = upload_image(image_bytes, job_id, image_type, i, ext)
             if path:
-                saved_paths.append(path)
-        except Exception as e:
-            st.error(f"❌ Failed to upload image: {uploaded_file.name}")
-            continue
-    
-    return saved_paths, len(saved_paths)
+                paths.append(path)
+        except Exception:
+            st.error(f"Failed to upload: {uploaded_file.name}")
+    return paths
 
-# ======================================
-# SESSION STATE INITIALIZATION
-# ======================================
-if 'spare_parts' not in st.session_state:
+
+if "spare_parts" not in st.session_state:
     st.session_state.spare_parts = []
 
-if 'images_before' not in st.session_state:
-    st.session_state.images_before = []
+assign_options = list(dict.fromkeys(get_technician_list() + get_user_list())) or ["No assignees loaded"]
 
-if 'images_after' not in st.session_state:
-    st.session_state.images_after = []
+with st.form("job_entry_form"):
+    st.markdown("#### Job Classification")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        job_type = st.selectbox("Job Type *", [""] + JOB_TYPES)
+    with c2:
+        severity = st.selectbox("Severity *", [""] + SEVERITY_OPTIONS)
+    with c3:
+        priority = st.selectbox("Priority *", [""] + PRIORITY_OPTIONS)
 
-# ======================================
-# FORM START
-# ======================================
-form = st.form("job_entry_form")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        frequency = st.selectbox("Maintenance Frequency *", [""] + FREQUENCY_OPTIONS)
+    with c2:
+        shift = st.selectbox("Shift *", [""] + SHIFT_OPTIONS)
+    with c3:
+        location = st.text_input("Location *", placeholder="e.g. Zone 1")
 
-# ======================================
-# SECTION 1: AUTO-GENERATED FIELDS
-# ======================================
-form.markdown("### 🆔 Auto-Generated Information")
-col1, col2, col3 = form.columns(3)
+    job_id = generate_job_id(job_type if job_type else "Maintenance")
+    st.caption(f"**Job ID:** `{job_id}`")
 
-with col1:
-    job_id = _generate_job_id()
-    form.text_input("Job ID", value=job_id, disabled=True, help="Auto-generated unique identifier")
+    st.markdown("#### Schedule & Assignment")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        date_start = st.date_input("Date Start *", value=today_sg())
+    with c2:
+        time_start = st.time_input("Time Start *", value=datetime.now().time())
+    with c3:
+        date_end = st.date_input("Date End", value=today_sg())
+    with c4:
+        time_end = st.time_input("Time End", value=datetime.now().time())
 
-with col2:
-    created_by = _current_user()
-    form.text_input("Created By", value=created_by, disabled=True, help="Auto-filled from login")
+    c1, c2 = st.columns(2)
+    with c1:
+        assign_by = st.selectbox("Assign by *", [""] + assign_options)
+    with c2:
+        job_status = st.selectbox("Job Status *", [""] + JOB_STATUS_OPTIONS)
 
-with col3:
-    created_at = format_ts_sg()
-    form.text_input("Created At", value=created_at, disabled=True, help="Auto-generated timestamp")
+    st.markdown("#### Machine & Task Details")
+    c1, c2 = st.columns(2)
+    with c1:
+        machine_id = st.text_input("Machine ID", placeholder="NA")
+    with c2:
+        machine_equipment = st.text_input("Machine/Equipment", placeholder="NA")
 
-form.markdown("---")
+    task_description = st.text_area("Task Description *", height=100, placeholder="Describe the task")
+    action = st.text_area("Action", height=80, placeholder="Action taken or planned")
+    remark = st.text_area("Remark", height=60, placeholder="Additional notes")
+    verify_by = st.text_input("Verify by", placeholder="Verifier name")
 
-# ======================================
-# SECTION 2: JOB TYPE & CLASS
-# ======================================
-form.markdown("### 📋 Job Classification")
-col1, col2, col3, col4 = form.columns(4)
+    st.markdown("#### Images")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Before (min 4 for Completed submit)**")
+        before_files = st.file_uploader(
+            "Before images",
+            type=["jpg", "jpeg", "png", "gif", "webp"],
+            accept_multiple_files=True,
+            key="before_images",
+        )
+        st.caption(f"Selected: {len(before_files) if before_files else 0}")
+    with c2:
+        st.markdown("**After (min 4 for Completed submit)**")
+        after_files = st.file_uploader(
+            "After images",
+            type=["jpg", "jpeg", "png", "gif", "webp"],
+            accept_multiple_files=True,
+            key="after_images",
+        )
+        st.caption(f"Selected: {len(after_files) if after_files else 0}")
 
-with col1:
-    job_type = form.selectbox(
-        "Job Type *",
-        options=["", "Maintenance", "Repair", "Inspection"],
-        help="Type of job to be performed"
-    )
+    st.markdown("#### Spare Parts Used")
+    spare_text = st.text_input("Spare Parts (comma-separated or NA)", placeholder="e.g. hinge x2, bolt x4")
 
-with col2:
-    job_class = form.selectbox(
-        "Job Class *",
-        options=["", "Electrical", "Mechanical", "Civil", "General"],
-        help="Classification of job"
-    )
+    submitted = st.form_submit_button("Save Report", use_container_width=True, type="primary")
 
-with col3:
-    date_start = form.date_input(
-        "Date Start *",
-        value=today_sg(),
-        help="Job start date"
-    )
+if submitted:
+    spare_parts_value = spare_text.strip()
+    if st.session_state.spare_parts:
+        parts_str = "; ".join(
+            f"{p['item_name']} x{p['quantity']}" for p in st.session_state.spare_parts
+        )
+        spare_parts_value = parts_str if not spare_parts_value else f"{spare_parts_value}; {parts_str}"
 
-with col4:
-    time_start = form.time_input(
-        "Time Start *",
-        value=datetime.now().time(),
-        help="Job start time"
-    )
-
-form.markdown("---")
-
-# ======================================
-# SECTION 3: JOB DURATION
-# ======================================
-form.markdown("### ⏰ Job Duration")
-col1, col2, col3, col4 = form.columns(4)
-
-with col1:
-    date_end = form.date_input(
-        "Date End",
-        value=date_start,
-        help="Job end date (optional)"
-    )
-
-with col2:
-    time_end = form.time_input(
-        "Time End",
-        value=datetime.now().time(),
-        help="Job end time (optional)"
-    )
-
-with col3:
-    form.markdown("")
-    form.markdown("")
-    form.info("⏱️ Leave empty if job not yet completed")
-
-form.markdown("---")
-
-# ======================================
-# SECTION 4: PERSONNEL
-# ======================================
-form.markdown("### 👤 Personnel Assignment")
-col1, col2 = form.columns(2)
-
-with col1:
-    technician_list = _get_technician_list()
-    technician = form.selectbox(
-        "Assigned Technician *",
-        options=[""] + technician_list,
-        help="Select technician from registered users"
-    )
-
-with col2:
-    verify_by = form.text_input(
-        "Verify By",
-        placeholder="Name of verifier",
-        help="Optional: Person who will verify the job"
-    )
-
-form.markdown("---")
-
-# ======================================
-# SECTION 5: JOB DESCRIPTION
-# ======================================
-form.markdown("### 📝 Job Description")
-
-job_title = form.text_area(
-    "Job Title *",
-    max_chars=None,
-    placeholder="Enter job title (max 40 words)",
-    height=60,
-    help="Brief title of the job"
-)
-title_word_count = _count_words(job_title)
-form.caption(f"Word count: {title_word_count}/40")
-if title_word_count > 40:
-    form.error("❌ Job Title exceeds 40 words")
-
-job_details = form.text_area(
-    "Job Details *",
-    max_chars=None,
-    placeholder="Enter detailed job description (max 300 words)",
-    height=120,
-    help="Detailed description of work performed"
-)
-details_word_count = _count_words(job_details)
-form.caption(f"Word count: {details_word_count}/300")
-if details_word_count > 300:
-    form.error("❌ Job Details exceeds 300 words")
-
-remark = form.text_area(
-    "Remarks",
-    max_chars=None,
-    placeholder="Additional remarks (max 100 words)",
-    height=80,
-    help="Any additional notes or observations"
-)
-remark_word_count = _count_words(remark)
-form.caption(f"Word count: {remark_word_count}/100")
-if remark_word_count > 100:
-    form.error("❌ Remarks exceeds 100 words")
-
-form.markdown("---")
-
-# ======================================
-# SECTION 6: JOB STATUS
-# ======================================
-form.markdown("### ✅ Job Status")
-col1, col2 = form.columns(2)
-
-with col1:
-    job_status = form.selectbox(
-        "Job Status *",
-        options=["", "Pending", "Inprogress", "Completed"],
-        help="Current status of the job"
-    )
-
-form.markdown("---")
-
-# ======================================
-# SECTION 7: SPARE PARTS
-# ======================================
-form.markdown("### 🔧 Spare Parts Used")
-form.info("Add spare parts used during the job")
-
-spare_col1, spare_col2, spare_col3 = form.columns([2, 1, 1])
-
-with spare_col1:
-    spare_item = form.text_input("Item Name", key=f"spare_item_{len(st.session_state.spare_parts)}")
-
-with spare_col2:
-    spare_qty = form.number_input(
-        "Quantity",
-        min_value=1,
-        value=1,
-        key=f"spare_qty_{len(st.session_state.spare_parts)}"
-    )
-
-with spare_col3:
-    form.markdown("")
-    form.markdown("")
-    if form.button("➕ Add Item", key=f"add_spare_{len(st.session_state.spare_parts)}"):
-        if spare_item.strip():
-            st.session_state.spare_parts.append({
-                "item_name": spare_item,
-                "quantity": spare_qty
-            })
-
-# Display current spare parts
-if st.session_state.spare_parts:
-    form.markdown("**Current Spare Parts:**")
-    spare_parts_df = pd.DataFrame(st.session_state.spare_parts)
-    form.dataframe(
-        spare_parts_df,
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    if form.button("🗑️ Clear All Spare Parts"):
-        st.session_state.spare_parts = []
-        st.rerun()
-
-form.markdown("---")
-
-# ======================================
-# SECTION 8: IMAGES - BEFORE
-# ======================================
-form.markdown("### 📸 Before Images (Minimum 4)")
-before_images = form.file_uploader(
-    "Upload 'Before' images",
-    type=['jpg', 'jpeg', 'png', 'gif', 'webp'],
-    accept_multiple_files=True,
-    key="before_images",
-    help="Upload at least 4 'before' images (JPEG, PNG, GIF, WebP)"
-)
-form.caption(f"Images uploaded: {len(before_images) if before_images else 0}/4 (minimum)")
-
-form.markdown("---")
-
-# ======================================
-# SECTION 9: IMAGES - AFTER
-# ======================================
-form.markdown("### 📸 After Images (Minimum 4)")
-after_images = form.file_uploader(
-    "Upload 'After' images",
-    type=['jpg', 'jpeg', 'png', 'gif', 'webp'],
-    accept_multiple_files=True,
-    key="after_images",
-    help="Upload at least 4 'after' images (JPEG, PNG, GIF, WebP)"
-)
-form.caption(f"Images uploaded: {len(after_images) if after_images else 0}/4 (minimum)")
-
-form.markdown("---")
-
-# ======================================
-# SUBMIT & SAVE BUTTONS
-# ======================================
-st.markdown("### 🎯 Submit Your Report")
-col1, col2, col3 = form.columns(3)
-
-with col1:
-    submit_button = form.form_submit_button(
-        label="✅ Submit",
-        use_container_width=True,
-        help="Submit and save the job report to database"
-    )
-
-with col2:
-    save_button = form.form_submit_button(
-        label="💾 Save (Draft)",
-        use_container_width=True,
-        help="Save as draft (validation not enforced)"
-    )
-
-with col3:
-    form.markdown("")
-
-# ======================================
-# FORM PROCESSING
-# ======================================
-if submit_button or save_button:
-    # Prepare data dictionary
-    job_data = {
-        "job_id": job_id,
-        "created_by": auth.get("user_id", "system"),
-        "created_at": now_sg(),
-        "job_type": job_type,
-        "job_class": job_class,
-        "date_start": date_start,
-        "time_start": time_start,
-        "date_end": date_end if date_end else None,
-        "time_end": time_end if time_end else None,
-        "technician": technician,
-        "job_title": job_title,
-        "job_details": job_details,
-        "remark": remark,
-        "job_status": job_status,
-        "verify_by": verify_by,
-        "images_before_paths": [],
-        "images_after_paths": [],
-        "last_modified": now_sg(),
-        "last_modified_by": auth.get("user_id", "system"),
+    record = {
+        "Job Type": job_type,
+        "Create By": _current_user_name(),
+        "Create at": format_ts_sg(now_sg()),
+        "Date": today_sg().isoformat(),
+        "Job ID": job_id,
+        "Severity": severity,
+        "Priority": priority,
+        "Maintenance Frequency": frequency,
+        "Shift": shift,
+        "Location": location.strip(),
+        "Job Status": job_status,
+        "Assign by": assign_by,
+        "Date Start": date_start.isoformat(),
+        "Time Start": time_start.strftime("%H:%M:%S"),
+        "Machine ID": machine_id.strip() or "NA",
+        "Date End": date_end.isoformat() if date_end else "",
+        "Time End": time_end.strftime("%H:%M:%S") if time_end else "",
+        "Machine/Equipment": machine_equipment.strip() or "NA",
+        "Task Description": task_description.strip(),
+        "Action": action.strip() or "NA",
+        "Remark": remark.strip() or "NA",
+        "Verify by": verify_by.strip() or "NA",
+        "Spare Parts Used": spare_parts_value or "NA",
+        "Before Images": "",
+        "After Images": "",
     }
 
-    # Validation for Submit button
-    is_valid = True
-    error_messages = []
-    
-    if submit_button:
-        is_valid, val_msg = validate_job_data(job_data)
-        if not is_valid:
-            error_messages.append(val_msg)
-    else:
-        # Draft mode - only check required fields
-        if not job_type:
-            error_messages.append("Job Type is required")
-        if not job_class:
-            error_messages.append("Job Class is required")
-        if not technician:
-            error_messages.append("Technician is required")
-        if not job_title:
-            error_messages.append("Job Title is required")
-        if not job_status:
-            error_messages.append("Job Status is required")
+    require_images = job_status == "Completed"
+    is_valid, errors = validate_task_report(record, require_images=False)
 
-    # Handle errors
-    if error_messages:
-        for error_msg in error_messages:
-            st.error(f"❌ {error_msg}")
+    if require_images:
+        before_count = len(before_files) if before_files else 0
+        after_count = len(after_files) if after_files else 0
+        if before_count < 4:
+            errors.append(f"Before images: {before_count}/4 required for Completed status")
+        if after_count < 4:
+            errors.append(f"After images: {after_count}/4 required for Completed status")
+
+    if errors:
+        st.error("Please fix the following:\n" + "\n".join(f"• {e}" for e in errors))
     else:
-        # Upload images
-        with st.spinner("⏳ Uploading images..."):
-            if before_images:
-                before_paths, count_before = _upload_images(before_images, job_id, "before")
-                job_data["images_before_paths"] = ",".join(before_paths)
-            
-            if after_images:
-                after_paths, count_after = _upload_images(after_images, job_id, "after")
-                job_data["images_after_paths"] = ",".join(after_paths)
-        
-        # Save job task
-        try:
-            with st.spinner("💾 Saving to database..."):
-                success = save_job_task(job_data, st.session_state.spare_parts if st.session_state.spare_parts else None)
-            
-            if success:
-                if submit_button:
-                    st.success(f"✅ Job Report Submitted Successfully!\n\nJob ID: **{job_id}**")
-                else:
-                    st.success(f"✅ Job Report Saved as Draft!\n\nJob ID: **{job_id}**")
-                
-                st.info("📊 The report has been uploaded to Google Cloud Storage and is now accessible.")
-                
-                # Show summary
-                st.markdown("### 📋 Report Summary")
-                summary_data = {
-                    "Job ID": job_id,
-                    "Job Type": job_type,
-                    "Job Class": job_class,
-                    "Technician": technician,
-                    "Status": job_status,
-                    "Images Before": len(before_images) if before_images else 0,
-                    "Images After": len(after_images) if after_images else 0,
-                    "Spare Parts": len(st.session_state.spare_parts),
-                }
-                st.dataframe(
-                    pd.DataFrame([summary_data]),
-                    use_container_width=True,
-                    hide_index=True
-                )
+        with st.spinner("Uploading images..."):
+            if before_files:
+                record["Before Images"] = ",".join(_upload_images(before_files, job_id, "before"))
+            if after_files:
+                record["After Images"] = ",".join(_upload_images(after_files, job_id, "after"))
+
+        with st.spinner("Saving to cloud..."):
+            if save_task_report(record):
+                st.success(f"Report saved successfully — Job ID: **{job_id}**")
+                st.balloons()
+                st.session_state.spare_parts = []
             else:
-                st.error("❌ Failed to save report. Please try again.")
-        
-        except Exception as e:
-            st.error(f"❌ Error saving report: {e}")
-            st.info("Please check your internet connection and Google Cloud Storage configuration.")
+                st.error("Failed to save report. Please try again.")
+
+st.markdown("---")
+st.markdown("**Quick-add spare parts**")
+c1, c2, c3 = st.columns([3, 1, 1])
+with c1:
+    spare_item = st.text_input("Item name", key="spare_item_out")
+with c2:
+    spare_qty = st.number_input("Qty", min_value=1, value=1, key="spare_qty_out")
+with c3:
+    st.write("")
+    if st.button("Add Item"):
+        if spare_item.strip():
+            st.session_state.spare_parts.append({"item_name": spare_item.strip(), "quantity": spare_qty})
+            st.rerun()
+        else:
+            st.error("Item name required")
+
+if st.session_state.spare_parts:
+    st.dataframe(pd.DataFrame(st.session_state.spare_parts), use_container_width=True, hide_index=True)
+    if st.button("Clear spare parts"):
+        st.session_state.spare_parts = []
+        st.rerun()

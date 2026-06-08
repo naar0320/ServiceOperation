@@ -334,7 +334,7 @@ def lookup_user_in_regdata(user_id: str) -> Dict[str, Any]:
                 elif role_raw in ("user level", "userlevel", "user", "technician", "operator"):
                     level_rank = 2
                 else:
-                    level_rank = 2
+                    level_rank = 1
 
                 return {
                     "ok": True,
