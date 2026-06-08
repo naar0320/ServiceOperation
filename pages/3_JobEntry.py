@@ -8,7 +8,6 @@ from database_schema import (
     SEVERITY_OPTIONS,
     PRIORITY_OPTIONS,
     FREQUENCY_OPTIONS,
-    SHIFT_OPTIONS,
     JOB_STATUS_OPTIONS,
     validate_task_report,
 )
@@ -74,12 +73,10 @@ with st.form("job_entry_form"):
     with c3:
         priority = st.selectbox("Priority *", [""] + PRIORITY_OPTIONS)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         frequency = st.selectbox("Maintenance Frequency *", [""] + FREQUENCY_OPTIONS)
     with c2:
-        shift = st.selectbox("Shift *", [""] + SHIFT_OPTIONS)
-    with c3:
         location = st.text_input("Location *", placeholder="e.g. Zone 1")
 
     job_id = generate_job_id(job_type if job_type else "Maintenance")
@@ -102,13 +99,7 @@ with st.form("job_entry_form"):
     with c2:
         job_status = st.selectbox("Job Status *", [""] + JOB_STATUS_OPTIONS)
 
-    st.markdown("#### Machine & Task Details")
-    c1, c2 = st.columns(2)
-    with c1:
-        machine_id = st.text_input("Machine ID", placeholder="NA")
-    with c2:
-        machine_equipment = st.text_input("Machine/Equipment", placeholder="NA")
-
+    st.markdown("#### Task Details")
     task_description = st.text_area("Task Description *", height=100, placeholder="Describe the task")
     action = st.text_area("Action", height=80, placeholder="Action taken or planned")
     remark = st.text_area("Remark", height=60, placeholder="Additional notes")
@@ -157,16 +148,13 @@ if submitted:
         "Severity": severity,
         "Priority": priority,
         "Maintenance Frequency": frequency,
-        "Shift": shift,
         "Location": location.strip(),
         "Job Status": job_status,
         "Assign by": assign_by,
         "Date Start": date_start.isoformat(),
         "Time Start": time_start.strftime("%H:%M:%S"),
-        "Machine ID": machine_id.strip() or "NA",
         "Date End": date_end.isoformat() if date_end else "",
         "Time End": time_end.strftime("%H:%M:%S") if time_end else "",
-        "Machine/Equipment": machine_equipment.strip() or "NA",
         "Task Description": task_description.strip(),
         "Action": action.strip() or "NA",
         "Remark": remark.strip() or "NA",

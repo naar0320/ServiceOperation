@@ -22,14 +22,13 @@ st.markdown("---")
 
 DETAIL_COLUMNS = [
     "Job ID", "Job Type", "Job Status", "Severity", "Priority",
-    "Maintenance Frequency", "Shift", "Location", "Create By", "Create at",
+    "Maintenance Frequency", "Location", "Create By", "Create at",
     "Assign by", "Date Start", "Time Start", "Date End", "Time End",
-    "Machine ID", "Machine/Equipment", "Task Description", "Action",
-    "Remark", "Verify by", "Spare Parts Used",
+    "Task Description", "Action", "Remark", "Verify by", "Spare Parts Used",
 ]
 TABLE_COLUMNS = [
     "Job ID", "Create at", "Job Status", "Priority", "Severity",
-    "Job Type", "Location", "Assign by", "Create By", "Machine ID", "Task Description",
+    "Job Type", "Location", "Assign by", "Create By", "Task Description",
 ]
 
 

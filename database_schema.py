@@ -5,8 +5,6 @@ Matches GCS databases/databases_task_reports.db structure.
 
 import sqlite3
 from pathlib import Path
-from typing import Optional
-
 TASK_REPORTS_TABLE = "task_reports"
 
 # Column definitions matching GCS task_reports table (exact names with spaces)
@@ -19,16 +17,13 @@ TASK_REPORT_COLUMNS = [
     "Severity",
     "Priority",
     "Maintenance Frequency",
-    "Shift",
     "Location",
     "Job Status",
     "Assign by",
     "Date Start",
     "Time Start",
-    "Machine ID",
     "Date End",
     "Time End",
-    "Machine/Equipment",
     "Task Description",
     "Action",
     "Remark",
@@ -52,8 +47,10 @@ FREQUENCY_OPTIONS = [
     "Yearly",
     "As Needed",
 ]
-SHIFT_OPTIONS = ["Day", "Night", "Morning", "Afternoon", "Evening"]
 JOB_STATUS_OPTIONS = ["Pending", "In Progress", "Completed"]
+
+# Legacy columns removed from schema (stripped on read/write)
+REMOVED_COLUMNS = ["Shift", "Machine ID", "Machine/Equipment"]
 
 REQUIRED_FIELDS = [
     "Job Type",
@@ -61,7 +58,6 @@ REQUIRED_FIELDS = [
     "Severity",
     "Priority",
     "Maintenance Frequency",
-    "Shift",
     "Location",
     "Job Status",
     "Assign by",
@@ -80,16 +76,13 @@ CREATE TABLE IF NOT EXISTS [{TASK_REPORTS_TABLE}] (
     [Severity] TEXT,
     [Priority] TEXT,
     [Maintenance Frequency] TEXT,
-    [Shift] TEXT,
     [Location] TEXT,
     [Job Status] TEXT,
     [Assign by] TEXT,
     [Date Start] TEXT,
     [Time Start] TEXT,
-    [Machine ID] TEXT,
     [Date End] TEXT,
     [Time End] TEXT,
-    [Machine/Equipment] TEXT,
     [Task Description] TEXT,
     [Action] TEXT,
     [Remark] TEXT,

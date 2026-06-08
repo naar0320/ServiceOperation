@@ -13,7 +13,7 @@ import streamlit as st
 from google.cloud import storage
 from google.oauth2 import service_account
 
-from database_schema import CREATE_TABLE_SQL, TASK_REPORTS_TABLE
+from database_schema import CREATE_TABLE_SQL, REMOVED_COLUMNS, TASK_REPORT_COLUMNS, TASK_REPORTS_TABLE
 
 # ======================================
 # Configuration
@@ -96,7 +96,7 @@ def download_database() -> pd.DataFrame:
 
         try:
             df = pd.read_sql_query(f'SELECT * FROM [{TASK_REPORTS_TABLE}]', conn)
-            return df
+            return _normalize_dataframe(df)
         except Exception:
             return pd.DataFrame()
         finally:
@@ -106,10 +106,24 @@ def download_database() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop legacy columns and align to current schema."""
+    if df.empty:
+        return df
+    df = df.drop(columns=[c for c in REMOVED_COLUMNS if c in df.columns], errors="ignore")
+    extra = [c for c in df.columns if c not in TASK_REPORT_COLUMNS]
+    if extra:
+        df = df.drop(columns=extra, errors="ignore")
+    for col in TASK_REPORT_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    return df[TASK_REPORT_COLUMNS]
+
+
 def _write_dataframe_to_db(df: pd.DataFrame, temp_path: Path) -> None:
     conn = sqlite3.connect(str(temp_path))
     conn.execute(CREATE_TABLE_SQL)
-    df.to_sql(TASK_REPORTS_TABLE, conn, if_exists="replace", index=False)
+    _normalize_dataframe(df).to_sql(TASK_REPORTS_TABLE, conn, if_exists="replace", index=False)
     conn.commit()
     conn.close()
 
@@ -130,6 +144,7 @@ def save_task_report(record: dict) -> bool:
         else:
             df = pd.concat([df, pd.DataFrame([record])], ignore_index=True)
 
+        df = _normalize_dataframe(df)
         temp_path = _temp_db_path("task_reports_save.db")
         _write_dataframe_to_db(df, temp_path)
         _upload_db_file(temp_path, REMOTE_DB_PATH)
@@ -302,6 +317,30 @@ def list_uploaded_data(prefix: str = "") -> list:
     except Exception as e:
         st.error(f"Failed to list uploaded data: {e}")
         return []
+
+
+def migrate_gcs_database() -> bool:
+    """Rewrite GCS database using current schema (drops removed columns)."""
+    try:
+        df = download_database()
+        if df.empty:
+            temp_path = _temp_db_path("task_reports_migrate.db")
+            conn = sqlite3.connect(str(temp_path))
+            conn.execute(CREATE_TABLE_SQL)
+            conn.commit()
+            conn.close()
+            _upload_db_file(temp_path, REMOTE_DB_PATH)
+            temp_path.unlink(missing_ok=True)
+            return True
+
+        temp_path = _temp_db_path("task_reports_migrate.db")
+        _write_dataframe_to_db(df, temp_path)
+        _upload_db_file(temp_path, REMOTE_DB_PATH)
+        temp_path.unlink(missing_ok=True)
+        return True
+    except Exception as e:
+        st.error(f"Failed to migrate database: {e}")
+        return False
 
 
 def check_gcs_connection() -> bool:
