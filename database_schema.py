@@ -20,9 +20,7 @@ TASK_REPORT_COLUMNS = [
     "Location",
     "Job Status",
     "Assign by",
-    "Date Start",
     "Time Start",
-    "Date End",
     "Time End",
     "Task Description",
     "Action",
@@ -57,7 +55,7 @@ IMAGE_RULES = {
 }
 
 # Legacy columns removed from schema (stripped on read/write)
-REMOVED_COLUMNS = ["Shift", "Machine ID", "Machine/Equipment"]
+REMOVED_COLUMNS = ["Shift", "Machine ID", "Machine/Equipment", "Date Start", "Date End"]
 
 REQUIRED_FIELDS = [
     "Job Type",
@@ -68,7 +66,6 @@ REQUIRED_FIELDS = [
     "Location",
     "Job Status",
     "Assign by",
-    "Date Start",
     "Time Start",
     "Task Description",
 ]
@@ -86,9 +83,7 @@ CREATE TABLE IF NOT EXISTS [{TASK_REPORTS_TABLE}] (
     [Location] TEXT,
     [Job Status] TEXT,
     [Assign by] TEXT,
-    [Date Start] TEXT,
     [Time Start] TEXT,
-    [Date End] TEXT,
     [Time End] TEXT,
     [Task Description] TEXT,
     [Action] TEXT,
