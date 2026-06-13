@@ -17,6 +17,7 @@ from gcp_storage import (
     generate_job_id,
     get_technician_list,
     get_user_list,
+    parse_image_paths,
     save_task_report,
     upload_image,
 )
@@ -63,30 +64,104 @@ def _time_select_10min(label: str, default: time | None = None, key: str = "time
     return time(int(h), int(m))
 
 
-def _upload_images(uploaded_files, job_id: str, image_type: str) -> list[str]:
+def _stable_job_id(job_type: str) -> str:
+    """Keep the same Job ID while filling the form; refresh when job type changes."""
+    key_type = job_type or "Maintenance"
+    if (
+        st.session_state.get("job_entry_type") != key_type
+        or "job_entry_id" not in st.session_state
+    ):
+        st.session_state.job_entry_type = key_type
+        st.session_state.job_entry_id = generate_job_id(key_type)
+    return st.session_state.job_entry_id
+
+
+def _reset_job_id() -> None:
+    st.session_state.pop("job_entry_id", None)
+    st.session_state.pop("job_entry_type", None)
+
+
+def _read_upload_bytes(uploaded_file) -> bytes:
+    uploaded_file.seek(0)
+    data = uploaded_file.getvalue()
+    if not data:
+        data = uploaded_file.read()
+    return data or b""
+
+
+def _upload_images(uploaded_files, job_id: str, image_type: str) -> tuple[list[str], list[str]]:
+    """Upload files to GCS. Returns (paths, errors)."""
     if not uploaded_files:
-        return []
+        return [], []
     paths = []
+    errors = []
     for i, uploaded_file in enumerate(uploaded_files, start=1):
         try:
             ext = Path(uploaded_file.name).suffix.lower() or ".jpeg"
-            image_bytes = uploaded_file.getbuffer().tobytes()
+            image_bytes = _read_upload_bytes(uploaded_file)
+            if not image_bytes:
+                errors.append(f"{uploaded_file.name}: file is empty")
+                continue
             path = upload_image(image_bytes, job_id, image_type, i, ext)
             if path:
                 paths.append(path)
-        except Exception:
-            st.error(f"Failed to upload: {uploaded_file.name}")
-    return paths
+            else:
+                errors.append(f"{uploaded_file.name}: upload returned no path")
+        except Exception as exc:
+            errors.append(f"{uploaded_file.name}: {exc}")
+    return paths, errors
 
 
 assign_options = list(dict.fromkeys(get_technician_list() + get_user_list())) or ["No assignees loaded"]
 
-# Job Type outside form so image upload UI can adapt to selection
+# --- Job Type (outside form — drives image UI) ---
 st.markdown("#### Job Type")
 job_type = st.selectbox("Job Type *", [""] + JOB_TYPES, key="job_type_select", label_visibility="collapsed")
-job_id = generate_job_id(job_type if job_type else "Maintenance")
+job_id = _stable_job_id(job_type if job_type else "Maintenance")
 st.caption(f"**Job ID:** `{job_id}`")
 st.info(image_requirement_label(job_type))
+
+# --- Images OUTSIDE form (Streamlit forms block file upload on submit) ---
+before_files = None
+after_files = None
+inspection_files = None
+
+st.markdown("#### Images")
+if job_type == "Inspection":
+    min_inspection = IMAGE_RULES["Inspection"]["min_total"]
+    st.caption(f"Inspection photos — min {min_inspection} when status is Completed")
+    inspection_files = st.file_uploader(
+        "Upload inspection images",
+        type=["jpg", "jpeg", "png", "gif", "webp"],
+        accept_multiple_files=True,
+        key="inspection_images",
+    )
+    st.caption(f"Selected: {len(inspection_files) if inspection_files else 0}/{min_inspection}")
+elif job_type in ("Maintenance", "Repair"):
+    min_each = IMAGE_RULES[job_type]["min_before"]
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption(f"Before — min {min_each} when Completed")
+        before_files = st.file_uploader(
+            "Before images",
+            type=["jpg", "jpeg", "png", "gif", "webp"],
+            accept_multiple_files=True,
+            key="before_images",
+        )
+        st.caption(f"Selected: {len(before_files) if before_files else 0}/{min_each}")
+    with c2:
+        st.caption(f"After — min {min_each} when Completed")
+        after_files = st.file_uploader(
+            "After images",
+            type=["jpg", "jpeg", "png", "gif", "webp"],
+            accept_multiple_files=True,
+            key="after_images",
+        )
+        st.caption(f"Selected: {len(after_files) if after_files else 0}/{min_each}")
+else:
+    st.caption("Select a Job Type above to show image upload fields.")
+
+st.markdown("---")
 
 with st.form("job_entry_form"):
     st.markdown("#### Job Classification")
@@ -114,45 +189,6 @@ with st.form("job_entry_form"):
     action = st.text_area("Action", height=80, placeholder="Action taken or planned")
     remark = st.text_area("Remark", height=60, placeholder="Additional notes")
     verify_by = st.text_input("Verify by", placeholder="Verifier name")
-
-    st.markdown("#### Images")
-    before_files = None
-    after_files = None
-    inspection_files = None
-
-    if job_type == "Inspection":
-        min_inspection = IMAGE_RULES["Inspection"]["min_total"]
-        st.markdown(f"**Inspection photos (min {min_inspection} when Completed)**")
-        inspection_files = st.file_uploader(
-            "Upload inspection images",
-            type=["jpg", "jpeg", "png", "gif", "webp"],
-            accept_multiple_files=True,
-            key="inspection_images",
-        )
-        st.caption(f"Selected: {len(inspection_files) if inspection_files else 0}/{min_inspection}")
-    elif job_type in ("Maintenance", "Repair"):
-        min_each = IMAGE_RULES[job_type]["min_before"]
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"**Before (min {min_each} when Completed)**")
-            before_files = st.file_uploader(
-                "Before images",
-                type=["jpg", "jpeg", "png", "gif", "webp"],
-                accept_multiple_files=True,
-                key="before_images",
-            )
-            st.caption(f"Selected: {len(before_files) if before_files else 0}/{min_each}")
-        with c2:
-            st.markdown(f"**After (min {min_each} when Completed)**")
-            after_files = st.file_uploader(
-                "After images",
-                type=["jpg", "jpeg", "png", "gif", "webp"],
-                accept_multiple_files=True,
-                key="after_images",
-            )
-            st.caption(f"Selected: {len(after_files) if after_files else 0}/{min_each}")
-    else:
-        st.caption("Select a Job Type above to show the correct image upload fields.")
 
     st.markdown("#### Spare Parts Used")
     spare_text = st.text_input("Spare Parts (comma-separated or NA)", placeholder="e.g. hinge x2, bolt x4")
@@ -208,24 +244,44 @@ if submitted:
     if errors:
         st.error("Please fix the following:\n" + "\n".join(f"• {e}" for e in errors))
     else:
-        with st.spinner("Uploading images..."):
+        upload_errors = []
+        with st.spinner("Uploading images to Google Cloud..."):
             if job_type == "Inspection" and inspection_files:
-                record["Before Images"] = ",".join(
-                    _upload_images(inspection_files, job_id, "inspection")
-                )
+                paths, upload_errors = _upload_images(inspection_files, job_id, "inspection")
+                record["Before Images"] = ",".join(paths)
             elif job_type in ("Maintenance", "Repair"):
                 if before_files:
-                    record["Before Images"] = ",".join(
-                        _upload_images(before_files, job_id, "before")
-                    )
+                    paths, errs = _upload_images(before_files, job_id, "before")
+                    record["Before Images"] = ",".join(paths)
+                    upload_errors.extend(errs)
                 if after_files:
-                    record["After Images"] = ",".join(
-                        _upload_images(after_files, job_id, "after")
-                    )
+                    paths, errs = _upload_images(after_files, job_id, "after")
+                    record["After Images"] = ",".join(paths)
+                    upload_errors.extend(errs)
+
+        total_selected = before_count + after_count + inspection_count
+        total_uploaded = len(parse_image_paths(record.get("Before Images", ""))) + len(
+            parse_image_paths(record.get("After Images", ""))
+        )
+
+        if upload_errors:
+            st.error("Image upload errors:\n" + "\n".join(f"• {e}" for e in upload_errors))
+        if total_selected > 0 and total_uploaded == 0:
+            st.error("No images were uploaded to Google Cloud. Report was not saved.")
+            st.stop()
+        if total_selected > 0 and total_uploaded < total_selected:
+            st.warning(
+                f"Only {total_uploaded} of {total_selected} images uploaded. "
+                "Report was not saved — please retry."
+            )
+            st.stop()
 
         with st.spinner("Saving to cloud..."):
             if save_task_report(record):
+                _reset_job_id()
                 st.success(f"Report saved successfully — Job ID: **{job_id}**")
+                if total_uploaded:
+                    st.caption(f"{total_uploaded} image(s) uploaded to GCS.")
                 st.balloons()
             else:
                 st.error("Failed to save report. Please try again.")
