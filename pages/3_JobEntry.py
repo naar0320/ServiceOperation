@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 from datetime import datetime
 from pathlib import Path
 
@@ -60,9 +59,6 @@ def _upload_images(uploaded_files, job_id: str, image_type: str) -> list[str]:
             st.error(f"Failed to upload: {uploaded_file.name}")
     return paths
 
-
-if "spare_parts" not in st.session_state:
-    st.session_state.spare_parts = []
 
 assign_options = list(dict.fromkeys(get_technician_list() + get_user_list())) or ["No assignees loaded"]
 
@@ -159,12 +155,7 @@ if submitted:
         st.error("Job Type is required. Select it at the top of the page.")
         st.stop()
 
-    spare_parts_value = spare_text.strip()
-    if st.session_state.spare_parts:
-        parts_str = "; ".join(
-            f"{p['item_name']} x{p['quantity']}" for p in st.session_state.spare_parts
-        )
-        spare_parts_value = parts_str if not spare_parts_value else f"{spare_parts_value}; {parts_str}"
+    spare_parts_value = spare_text.strip() or "NA"
 
     record = {
         "Job Type": job_type,
@@ -186,7 +177,7 @@ if submitted:
         "Action": action.strip() or "NA",
         "Remark": remark.strip() or "NA",
         "Verify by": verify_by.strip() or "NA",
-        "Spare Parts Used": spare_parts_value or "NA",
+        "Spare Parts Used": spare_parts_value,
         "Before Images": "",
         "After Images": "",
     }
@@ -230,28 +221,5 @@ if submitted:
             if save_task_report(record):
                 st.success(f"Report saved successfully — Job ID: **{job_id}**")
                 st.balloons()
-                st.session_state.spare_parts = []
             else:
                 st.error("Failed to save report. Please try again.")
-
-st.markdown("---")
-st.markdown("**Quick-add spare parts**")
-c1, c2, c3 = st.columns([3, 1, 1])
-with c1:
-    spare_item = st.text_input("Item name", key="spare_item_out")
-with c2:
-    spare_qty = st.number_input("Qty", min_value=1, value=1, key="spare_qty_out")
-with c3:
-    st.write("")
-    if st.button("Add Item"):
-        if spare_item.strip():
-            st.session_state.spare_parts.append({"item_name": spare_item.strip(), "quantity": spare_qty})
-            st.rerun()
-        else:
-            st.error("Item name required")
-
-if st.session_state.spare_parts:
-    st.dataframe(pd.DataFrame(st.session_state.spare_parts), use_container_width=True, hide_index=True)
-    if st.button("Clear spare parts"):
-        st.session_state.spare_parts = []
-        st.rerun()
