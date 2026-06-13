@@ -1,12 +1,12 @@
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 
 from database_schema import (
     JOB_TYPES,
     SEVERITY_OPTIONS,
     PRIORITY_OPTIONS,
-    FREQUENCY_OPTIONS,
+    LOCATION_OPTIONS,
     JOB_STATUS_OPTIONS,
     IMAGE_RULES,
     image_requirement_label,
@@ -44,6 +44,25 @@ def _current_user_name() -> str:
     return str(auth.get("name") or auth.get("user_id") or "System").strip()
 
 
+def _round_time_10min(t: time) -> time:
+    minute = (t.minute // 10) * 10
+    return time(t.hour, minute)
+
+
+def _time_slots_10min() -> list[str]:
+    return [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 10, 20, 30, 40, 50)]
+
+
+def _time_select_10min(label: str, default: time | None = None, key: str = "time") -> time:
+    slots = _time_slots_10min()
+    rounded = _round_time_10min(default or datetime.now().time())
+    default_label = rounded.strftime("%H:%M")
+    index = slots.index(default_label) if default_label in slots else 0
+    selected = st.selectbox(label, slots, index=index, key=key)
+    h, m = selected.split(":")
+    return time(int(h), int(m))
+
+
 def _upload_images(uploaded_files, job_id: str, image_type: str) -> list[str]:
     if not uploaded_files:
         return []
@@ -71,24 +90,20 @@ st.info(image_requirement_label(job_type))
 
 with st.form("job_entry_form"):
     st.markdown("#### Job Classification")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         severity = st.selectbox("Severity *", [""] + SEVERITY_OPTIONS)
     with c2:
         priority = st.selectbox("Priority *", [""] + PRIORITY_OPTIONS)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        frequency = st.selectbox("Maintenance Frequency *", [""] + FREQUENCY_OPTIONS)
-    with c2:
-        location = st.text_input("Location *", placeholder="e.g. Zone 1")
+    with c3:
+        location = st.selectbox("Location *", [""] + LOCATION_OPTIONS)
 
     st.markdown("#### Schedule & Assignment")
     c1, c2, c3 = st.columns(3)
     with c1:
-        time_start = st.time_input("Time Start *", value=datetime.now().time())
+        time_start = _time_select_10min("Time Start *", key="time_start")
     with c2:
-        time_end = st.time_input("Time End", value=datetime.now().time())
+        time_end = _time_select_10min("Time End", key="time_end")
     with c3:
         assign_by = st.selectbox("Assign by *", [""] + assign_options)
 
@@ -159,8 +174,7 @@ if submitted:
         "Job ID": job_id,
         "Severity": severity,
         "Priority": priority,
-        "Maintenance Frequency": frequency,
-        "Location": location.strip(),
+        "Location": location,
         "Job Status": job_status,
         "Assign by": assign_by,
         "Time Start": time_start.strftime("%H:%M:%S"),
