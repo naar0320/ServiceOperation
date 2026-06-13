@@ -24,14 +24,14 @@ st.markdown("---")
 DETAIL_COLUMNS = [
     "Job ID", "Job Type", "Job Status", "Severity", "Priority",
     "Maintenance Frequency", "Location", "Create By", "Create at",
-    "Assign by", "Date Start", "Time Start", "Date End", "Time End",
+    "Assign by", "Time Start", "Time End",
     "Task Description", "Action", "Remark", "Verify by", "Spare Parts Used",
 ]
 TABLE_COLUMNS = [
     "Job ID", "Create at", "Job Status", "Priority", "Severity",
     "Job Type", "Location", "Assign by", "Create By", "Task Description",
 ]
-DATE_FILTER_COLUMNS = ["Create at", "Date", "Date Start", "Date End"]
+DATE_FILTER_COLUMNS = ["Create at", "Date"]
 
 
 def _priority_score(value: str) -> int:
@@ -92,8 +92,6 @@ def _render_date_filter(df: pd.DataFrame) -> tuple[pd.DataFrame, str, date, date
             format_func=lambda x: {
                 "Create at": "Created date/time",
                 "Date": "Report date",
-                "Date Start": "Job start date",
-                "Date End": "Job end date",
             }.get(x, x),
         )
 

@@ -84,21 +84,15 @@ with st.form("job_entry_form"):
         location = st.text_input("Location *", placeholder="e.g. Zone 1")
 
     st.markdown("#### Schedule & Assignment")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     with c1:
-        date_start = st.date_input("Date Start *", value=today_sg())
-    with c2:
         time_start = st.time_input("Time Start *", value=datetime.now().time())
-    with c3:
-        date_end = st.date_input("Date End", value=today_sg())
-    with c4:
-        time_end = st.time_input("Time End", value=datetime.now().time())
-
-    c1, c2 = st.columns(2)
-    with c1:
-        assign_by = st.selectbox("Assign by *", [""] + assign_options)
     with c2:
-        job_status = st.selectbox("Job Status *", [""] + JOB_STATUS_OPTIONS)
+        time_end = st.time_input("Time End", value=datetime.now().time())
+    with c3:
+        assign_by = st.selectbox("Assign by *", [""] + assign_options)
+
+    job_status = st.selectbox("Job Status *", [""] + JOB_STATUS_OPTIONS)
 
     st.markdown("#### Task Details")
     task_description = st.text_area("Task Description *", height=100, placeholder="Describe the task")
@@ -169,9 +163,7 @@ if submitted:
         "Location": location.strip(),
         "Job Status": job_status,
         "Assign by": assign_by,
-        "Date Start": date_start.isoformat(),
         "Time Start": time_start.strftime("%H:%M:%S"),
-        "Date End": date_end.isoformat() if date_end else "",
         "Time End": time_end.strftime("%H:%M:%S") if time_end else "",
         "Task Description": task_description.strip(),
         "Action": action.strip() or "NA",
