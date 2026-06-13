@@ -16,7 +16,6 @@ TASK_REPORT_COLUMNS = [
     "Job ID",
     "Severity",
     "Priority",
-    "Maintenance Frequency",
     "Location",
     "Job Status",
     "Assign by",
@@ -35,15 +34,13 @@ TASK_REPORT_COLUMNS = [
 JOB_TYPES = ["Maintenance", "Repair", "Inspection"]
 SEVERITY_OPTIONS = ["Low", "Medium", "High", "Critical"]
 PRIORITY_OPTIONS = ["Low", "Medium", "High", "Critical"]
-FREQUENCY_OPTIONS = [
-    "Daily",
-    "Twice a Day",
-    "Weekly",
-    "Bi-Weekly",
-    "Monthly",
-    "Quarterly",
-    "Yearly",
-    "As Needed",
+LOCATION_OPTIONS = [
+    "Main Stadium",
+    "Indoor Area",
+    "Aquatic Area",
+    "Foyer",
+    "Parking Area",
+    "Stadium Walk",
 ]
 JOB_STATUS_OPTIONS = ["Pending", "In Progress", "Completed"]
 
@@ -55,14 +52,16 @@ IMAGE_RULES = {
 }
 
 # Legacy columns removed from schema (stripped on read/write)
-REMOVED_COLUMNS = ["Shift", "Machine ID", "Machine/Equipment", "Date Start", "Date End"]
+REMOVED_COLUMNS = [
+    "Shift", "Machine ID", "Machine/Equipment",
+    "Date Start", "Date End", "Maintenance Frequency",
+]
 
 REQUIRED_FIELDS = [
     "Job Type",
     "Job ID",
     "Severity",
     "Priority",
-    "Maintenance Frequency",
     "Location",
     "Job Status",
     "Assign by",
@@ -79,7 +78,6 @@ CREATE TABLE IF NOT EXISTS [{TASK_REPORTS_TABLE}] (
     [Job ID] TEXT PRIMARY KEY,
     [Severity] TEXT,
     [Priority] TEXT,
-    [Maintenance Frequency] TEXT,
     [Location] TEXT,
     [Job Status] TEXT,
     [Assign by] TEXT,
@@ -130,6 +128,9 @@ def validate_task_report(record: dict, require_images: bool = False) -> tuple[bo
 
     if record.get("Priority") and record["Priority"] not in PRIORITY_OPTIONS:
         errors.append(f"Invalid Priority: {record['Priority']}")
+
+    if record.get("Location") and record["Location"] not in LOCATION_OPTIONS:
+        errors.append(f"Invalid Location: {record['Location']}")
 
     if require_images:
         job_type = record.get("Job Type", "")
