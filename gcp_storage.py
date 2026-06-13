@@ -27,6 +27,14 @@ REMOTE_DB_PATH = "databases/databases_task_reports.db"
 REMOTE_REGDATA_PATH = "databases/databases_regdata.db"
 REMOTE_IMAGES_PREFIX = "images"
 
+_IMAGE_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
 
 def _temp_db_path(name: str) -> Path:
     return Path(tempfile.gettempdir()) / name
@@ -308,14 +316,18 @@ def get_user_list() -> list[str]:
 # ======================================
 def upload_image(image_bytes: bytes, job_id: str, image_type: str, index: int, ext: str = ".jpeg") -> str:
     """Upload image and return GCS path (e.g. images/260427_M_002_before_1.jpeg)."""
+    if not image_bytes:
+        raise ValueError("Empty image data")
     try:
         bucket = get_bucket()
+        ext = ext if ext.startswith(".") else f".{ext}"
         remote_path = f"{REMOTE_IMAGES_PREFIX}/{job_id}_{image_type}_{index}{ext}"
         blob = bucket.blob(remote_path)
-        blob.upload_from_string(image_bytes)
+        content_type = _IMAGE_CONTENT_TYPES.get(ext.lower(), "application/octet-stream")
+        blob.upload_from_string(image_bytes, content_type=content_type)
         return remote_path
     except Exception as e:
-        st.error(f"Failed to upload image: {e}")
+        st.error(f"Failed to upload image {job_id}_{image_type}_{index}{ext}: {e}")
         return ""
 
 
