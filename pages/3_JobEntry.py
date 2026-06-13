@@ -81,6 +81,38 @@ def _reset_job_id() -> None:
     st.session_state.pop("job_entry_type", None)
 
 
+def _clear_image_lists(*keys: str) -> None:
+    for key in keys:
+        st.session_state.pop(f"{key}_list", None)
+
+
+def _accumulate_single_upload(list_key: str, uploader_key: str, label: str) -> list:
+    """Mobile-friendly: add one photo at a time to a session list."""
+    if list_key not in st.session_state:
+        st.session_state[list_key] = []
+
+    file = st.file_uploader(
+        label,
+        accept_multiple_files=False,
+        key=uploader_key,
+        type=["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"],
+    )
+    if file is not None:
+        signature = (file.name, len(_read_upload_bytes(file)))
+        existing = {(f.name, len(_read_upload_bytes(f))) for f in st.session_state[list_key]}
+        if signature not in existing and signature[1] > 0:
+            file.seek(0)
+            st.session_state[list_key].append(file)
+            st.rerun()
+
+    count = len(st.session_state[list_key])
+    st.caption(f"Added: {count}")
+    if count and st.button("Clear photos", key=f"clear_{list_key}"):
+        st.session_state[list_key] = []
+        st.rerun()
+    return st.session_state[list_key]
+
+
 def _read_upload_bytes(uploaded_file) -> bytes:
     uploaded_file.seek(0)
     data = uploaded_file.getvalue()
@@ -127,37 +159,63 @@ after_files = None
 inspection_files = None
 
 st.markdown("#### Images")
+mobile_mode = st.toggle(
+    "Mobile mode — upload one photo at a time (use this on Android phone)",
+    value=False,
+    help="Android Chrome often fails with multi-select. Turn this on and add photos one by one.",
+)
+
+with st.expander("Tips for Android / phone upload"):
+    st.markdown(
+        """
+        - Turn on **Mobile mode** above and add each photo separately  
+        - Pick photos from **Gallery**, not Camera (or save camera photo to gallery first)  
+        - Select files within **60 seconds** after tapping Browse (Streamlit timeout on Android)  
+        - If Chrome fails, try **Samsung Internet** or **Firefox**  
+        - You can save with status **Pending** first (no photos required), add photos later from a PC  
+        """
+    )
+
 if job_type == "Inspection":
     min_inspection = IMAGE_RULES["Inspection"]["min_total"]
     st.caption(f"Inspection photos — min {min_inspection} when status is Completed")
-    inspection_files = st.file_uploader(
-        "Upload inspection images",
-        type=["jpg", "jpeg", "png", "gif", "webp"],
-        accept_multiple_files=True,
-        key="inspection_images",
-    )
-    st.caption(f"Selected: {len(inspection_files) if inspection_files else 0}/{min_inspection}")
+    if mobile_mode:
+        inspection_files = _accumulate_single_upload("inspection_images", "inspection_mobile", "Add inspection photo")
+    else:
+        inspection_files = st.file_uploader(
+            "Upload inspection images",
+            type=["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"],
+            accept_multiple_files=True,
+            key="inspection_images",
+        )
+        st.caption(f"Selected: {len(inspection_files) if inspection_files else 0}/{min_inspection}")
 elif job_type in ("Maintenance", "Repair"):
     min_each = IMAGE_RULES[job_type]["min_before"]
-    c1, c2 = st.columns(2)
-    with c1:
+    if mobile_mode:
         st.caption(f"Before — min {min_each} when Completed")
-        before_files = st.file_uploader(
-            "Before images",
-            type=["jpg", "jpeg", "png", "gif", "webp"],
-            accept_multiple_files=True,
-            key="before_images",
-        )
-        st.caption(f"Selected: {len(before_files) if before_files else 0}/{min_each}")
-    with c2:
+        before_files = _accumulate_single_upload("before_images", "before_mobile", "Add BEFORE photo")
         st.caption(f"After — min {min_each} when Completed")
-        after_files = st.file_uploader(
-            "After images",
-            type=["jpg", "jpeg", "png", "gif", "webp"],
-            accept_multiple_files=True,
-            key="after_images",
-        )
-        st.caption(f"Selected: {len(after_files) if after_files else 0}/{min_each}")
+        after_files = _accumulate_single_upload("after_images", "after_mobile", "Add AFTER photo")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption(f"Before — min {min_each} when Completed")
+            before_files = st.file_uploader(
+                "Before images",
+                type=["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"],
+                accept_multiple_files=True,
+                key="before_images",
+            )
+            st.caption(f"Selected: {len(before_files) if before_files else 0}/{min_each}")
+        with c2:
+            st.caption(f"After — min {min_each} when Completed")
+            after_files = st.file_uploader(
+                "After images",
+                type=["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"],
+                accept_multiple_files=True,
+                key="after_images",
+            )
+            st.caption(f"Selected: {len(after_files) if after_files else 0}/{min_each}")
 else:
     st.caption("Select a Job Type above to show image upload fields.")
 
@@ -279,6 +337,7 @@ if submitted:
         with st.spinner("Saving to cloud..."):
             if save_task_report(record):
                 _reset_job_id()
+                _clear_image_lists("before_images", "after_images", "inspection_images")
                 st.success(f"Report saved successfully — Job ID: **{job_id}**")
                 if total_uploaded:
                     st.caption(f"{total_uploaded} image(s) uploaded to GCS.")
