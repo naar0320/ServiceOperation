@@ -641,6 +641,43 @@ def inspect_gcs_sqlite(remote_path: str) -> dict:
         return {}
 
 
+def save_gcs_table(
+    remote_path: str,
+    table_name: str,
+    df: pd.DataFrame,
+    *,
+    normalize_task_reports: bool = False,
+) -> tuple[bool, str]:
+    """Replace a table in a GCS SQLite file and upload it back."""
+    try:
+        db_bytes = _download_db_bytes(remote_path)
+        temp_path = _temp_db_path(f"gcs_save_{remote_path.replace('/', '_')}")
+        if db_bytes:
+            temp_path.write_bytes(db_bytes)
+        else:
+            sqlite3.connect(str(temp_path)).close()
+
+        save_df = df.copy()
+        if normalize_task_reports and table_name == TASK_REPORTS_TABLE:
+            save_df = _normalize_dataframe(save_df)
+
+        conn = sqlite3.connect(str(temp_path))
+        save_df.to_sql(table_name, conn, if_exists="replace", index=False)
+        conn.commit()
+        conn.close()
+
+        _upload_db_file(temp_path, remote_path)
+        temp_path.unlink(missing_ok=True)
+
+        if remote_path == REMOTE_REGDATA_PATH:
+            local_regdata = PROJECT_ROOT / "data" / "regdata.db"
+            sync_regdata_from_gcs(local_regdata)
+
+        return True, f"Saved **{table_name}** to Google Cloud ({len(save_df)} row(s))."
+    except Exception as exc:
+        return False, f"Could not save table: {exc}"
+
+
 def count_gcs_images() -> int:
     try:
         bucket = get_bucket()
