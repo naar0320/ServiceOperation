@@ -138,7 +138,7 @@ def rank_from_regdata_level(role_raw: str) -> int:
         return 3
     if role in ("user level", "userlevel", "user", "technician", "operator"):
         return 2
-    if role in ("viewer", "view only", "view", "readonly", "read only"):
+    if role in ("viewer", "view only", "viewonly", "view-only", "view", "readonly", "read only", "read-only"):
         return 1
     return 1
 
@@ -172,7 +172,8 @@ def _set_auth_session(user_info: Dict[str, Any]) -> None:
     }
 
 
-def _attempt_login(user_id: str, password: str, min_level_rank: int) -> bool:
+def _attempt_login(user_id: str, password: str) -> bool:
+    """Authenticate against RegData. Page access is checked separately."""
     from gcp_storage import authenticate_regdata_user
 
     user_info = authenticate_regdata_user(user_id, password)
@@ -180,14 +181,30 @@ def _attempt_login(user_id: str, password: str, min_level_rank: int) -> bool:
         st.error(user_info.get("error", "Invalid User ID or password."))
         return False
 
-    user_rank = int(user_info.get("level_rank", 1) or 1)
-    if user_rank < min_level_rank:
-        st.error(f"Access denied. This page requires {role_label_for_rank(min_level_rank)} access or above.")
-        return False
-
     _set_auth_session(user_info)
     st.success("Login successful")
     st.rerun()
+    return True
+
+
+def _allowed_pages_for_rank(rank: int) -> list[str]:
+    pages = ["Home"]
+    if can_access_job_entry(rank):
+        pages.append("Job Entry")
+    if can_access_master_user(rank):
+        pages.append("Master User")
+    return pages
+
+
+def _render_insufficient_access(auth: Dict[str, Any], min_level_rank: int) -> None:
+    user_rank = int(auth.get("rank", 1) or 1)
+    render_role_navigation(auth)
+    st.error(
+        f"This page requires **{role_label_for_rank(min_level_rank)}** access or above. "
+        f"You are signed in as **{role_label_for_rank(user_rank)}**."
+    )
+    allowed = _allowed_pages_for_rank(user_rank)
+    st.info(f"Your account can use: **{' · '.join(allowed)}**")
 
 
 def _render_forgot_password_panel(*, sidebar: bool = False) -> None:
@@ -283,6 +300,11 @@ def _render_login_form(min_level_rank: int) -> None:
     if logo:
         st.image(logo, width=240)
     st.warning("Login required to access this page.")
+    if min_level_rank > 1:
+        st.caption(
+            f"Need {role_label_for_rank(min_level_rank)} access for this page. "
+            "Viewer accounts can still log in and use Job Entry."
+        )
     with st.form("login_form"):
         user_id = st.text_input("User ID")
         password = st.text_input("Password", type="password")
@@ -294,7 +316,7 @@ def _render_login_form(min_level_rank: int) -> None:
         if not str(password or "").strip():
             st.error("Password is required")
             return
-        _attempt_login(user_id, password, min_level_rank)
+        _attempt_login(user_id, password)
 
     _render_forgot_password_panel(sidebar=False)
 
@@ -313,7 +335,7 @@ def require_login(min_level_rank: int = 1) -> Dict[str, Any]:
 
     user_rank = int(auth.get("rank", 1) or 1)
     if user_rank < min_level_rank:
-        st.error(f"Access denied. This page requires {role_label_for_rank(min_level_rank)} access or above.")
+        _render_insufficient_access(auth, min_level_rank)
         st.stop()
     return auth
 
@@ -351,7 +373,7 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
     with st.sidebar.form("home_login_form"):
         user_id = st.text_input("User ID", key="home_login_user_id")
         password = st.text_input("Password", type="password", key="home_login_password")
-        submitted = st.form_submit_button("Login for edit pages")
+        submitted = st.form_submit_button("Login")
     if submitted:
         if not str(user_id or "").strip():
             st.sidebar.error("User ID is required")
@@ -369,7 +391,7 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
                 st.rerun()
 
     _render_forgot_password_panel(sidebar=True)
-    st.sidebar.info("Home is available without login. Login to access additional pages.")
+    st.sidebar.info("Home is available without login. Log in to open Job Entry and other pages.")
     return None
 
 
