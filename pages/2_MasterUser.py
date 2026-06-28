@@ -20,6 +20,7 @@ from pdf_report import build_job_report_pdf, image_caption_from_path
 from utils import (
     format_ts_sg,
     get_page_icon,
+    can_access_cloud_database,
     hide_default_sidebar_navigation,
     render_page_header,
     render_role_navigation,
@@ -30,10 +31,15 @@ from utils import (
 st.set_page_config(page_title="Review Reports", page_icon=get_page_icon(), layout="wide")
 hide_default_sidebar_navigation()
 
-auth = require_login(min_level_rank=3)
+auth = require_login(min_level_rank=2)
 render_role_navigation(auth)
 
-render_page_header("Review & Download Reports", "Filter reports and export PDF / CSV")
+user_rank = int(auth.get("rank", 1) or 1)
+render_page_header(
+    "Review & Download Reports",
+    "Filter reports and export PDF / CSV"
+    + (" · Cloud DB for Master User only" if not can_access_cloud_database(user_rank) else ""),
+)
 
 LIST_COLUMNS = [
     "Job ID", "Create at", "Job Status", "Priority", "Job Type",
@@ -373,13 +379,14 @@ def _render_cloud_database_tab() -> None:
 try:
     df = download_database()
 
-    tab_reports, tab_database = st.tabs(["Reports", "Cloud Database"])
-
-    with tab_reports:
+    if can_access_cloud_database(user_rank):
+        tab_reports, tab_database = st.tabs(["Reports", "Cloud Database"])
+        with tab_reports:
+            _render_reports_tab(df)
+        with tab_database:
+            _render_cloud_database_tab()
+    else:
         _render_reports_tab(df)
-
-    with tab_database:
-        _render_cloud_database_tab()
 
 except Exception as e:
     st.error(f"Error loading page: {e}")

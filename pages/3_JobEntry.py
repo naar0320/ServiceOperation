@@ -35,7 +35,7 @@ from utils import (
 st.set_page_config(page_title="Job Entry", page_icon=get_page_icon(), layout="wide")
 hide_default_sidebar_navigation()
 
-auth = require_login(min_level_rank=2)
+auth = require_login(min_level_rank=1)
 render_role_navigation(auth)
 
 render_page_header("Job Task Entry", "Create a new maintenance task report")
