@@ -127,6 +127,7 @@ def format_ts_sg(dt: datetime = None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
 def _clear_auth_state() -> None:
     st.session_state["is_logged_in"] = False
     st.session_state["auth_user"] = None
+    st.session_state.pop("show_change_password", None)
 
 
 def _set_auth_session(user_info: Dict[str, Any]) -> None:
@@ -190,27 +191,45 @@ def _render_change_password_panel(auth: Dict[str, Any], *, sidebar: bool = True)
     from gcp_storage import authenticate_regdata_user, update_regdata_password
 
     container = st.sidebar if sidebar else st
-    with container.expander("Change password"):
-        with container.form("change_password_form"):
-            current_password = st.text_input("Current password", type="password")
-            new_password = st.text_input("New password", type="password")
-            confirm_password = st.text_input("Confirm new password", type="password")
-            submitted = st.form_submit_button("Update password")
+    key_prefix = "sidebar" if sidebar else "main"
 
-        if submitted:
-            user_id = str(auth.get("user_id", "")).strip()
-            if new_password != confirm_password:
-                container.error("New passwords do not match.")
+    if not st.session_state.get("show_change_password"):
+        if container.button(
+            "Change password",
+            key=f"{key_prefix}_open_change_password",
+            use_container_width=True,
+        ):
+            st.session_state["show_change_password"] = True
+            st.rerun()
+        return
+
+    container.caption("Update your account password")
+    with container.form(f"change_password_form_{key_prefix}"):
+        current_password = st.text_input("Current password", type="password")
+        new_password = st.text_input("New password", type="password")
+        confirm_password = st.text_input("Confirm new password", type="password")
+        submitted = st.form_submit_button("Update password", use_container_width=True)
+
+    if container.button("Cancel", key=f"{key_prefix}_cancel_change_password", use_container_width=True):
+        st.session_state["show_change_password"] = False
+        st.rerun()
+
+    if submitted:
+        user_id = str(auth.get("user_id", "")).strip()
+        if new_password != confirm_password:
+            container.error("New passwords do not match.")
+        else:
+            check = authenticate_regdata_user(user_id, current_password)
+            if not check.get("ok"):
+                container.error("Current password is incorrect.")
             else:
-                check = authenticate_regdata_user(user_id, current_password)
-                if not check.get("ok"):
-                    container.error("Current password is incorrect.")
+                ok, message = update_regdata_password(user_id, new_password)
+                if ok:
+                    st.session_state["show_change_password"] = False
+                    container.success(message)
+                    st.rerun()
                 else:
-                    ok, message = update_regdata_password(user_id, new_password)
-                    if ok:
-                        container.success(message)
-                    else:
-                        container.error(message)
+                    container.error(message)
 
 
 def render_sidebar_account(auth: Dict[str, Any]) -> None:
