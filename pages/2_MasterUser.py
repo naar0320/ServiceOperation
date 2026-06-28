@@ -37,12 +37,12 @@ render_page_header("Review & Download Reports", "Filter reports and export PDF /
 
 LIST_COLUMNS = [
     "Job ID", "Create at", "Job Status", "Priority", "Job Type",
-    "Location", "Assign by", "Create By",
+    "Location", "Attend by", "Create By",
 ]
 DETAIL_COLUMNS = [
     "Job ID", "Job Type", "Job Status", "Severity", "Priority",
     "Location", "Create By", "Create at", "Date",
-    "Assign by", "Time Start", "Time End",
+    "Attend by", "Time Start", "Time End",
     "Task Description", "Action", "Remark", "Verify by", "Spare Parts Used",
 ]
 DATE_COLUMNS = ["Create at", "Date"]
@@ -131,7 +131,7 @@ def _apply_report_filters(df: pd.DataFrame) -> pd.DataFrame:
 
     if search.strip():
         term = search.strip().lower()
-        search_cols = [c for c in ["Job ID", "Location", "Task Description", "Create By", "Assign by"] if c in filtered.columns]
+        search_cols = [c for c in ["Job ID", "Location", "Task Description", "Create By", "Attend by"] if c in filtered.columns]
         if search_cols:
             mask = pd.Series(False, index=filtered.index)
             for col in search_cols:
@@ -205,6 +205,15 @@ def _render_reports_tab(df: pd.DataFrame) -> None:
 
     filtered = _apply_report_filters(df)
     readable = _sorted_view(filtered)
+
+    filter_key = (
+        f"{len(filtered)}|{len(readable)}|"
+        f"{readable['Job ID'].astype(str).tolist() if 'Job ID' in readable.columns and not readable.empty else ''}"
+    )
+    if st.session_state.get("report_pdf_filter_key") != filter_key:
+        st.session_state.pop("report_pdf_zip", None)
+        st.session_state.pop("report_pdf_count", None)
+        st.session_state["report_pdf_filter_key"] = filter_key
 
     if "Job Status" in filtered.columns:
         c1, c2, c3, c4 = st.columns(4)
