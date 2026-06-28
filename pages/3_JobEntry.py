@@ -15,7 +15,6 @@ from database_schema import (
 )
 from gcp_storage import (
     generate_job_id,
-    get_technician_list,
     get_user_list,
     parse_image_paths,
     save_task_report,
@@ -66,7 +65,9 @@ def _time_select_10min(label: str, default: time | None = None, key: str = "time
 
 def _stable_job_id(job_type: str) -> str:
     """Keep the same Job ID while filling the form; refresh when job type changes."""
-    key_type = job_type or "Maintenance"
+    if not job_type:
+        return ""
+    key_type = job_type
     if (
         st.session_state.get("job_entry_type") != key_type
         or "job_entry_id" not in st.session_state
@@ -144,13 +145,16 @@ def _upload_images(uploaded_files, job_id: str, image_type: str) -> tuple[list[s
     return paths, errors
 
 
-assign_options = list(dict.fromkeys(get_technician_list() + get_user_list())) or ["No assignees loaded"]
+regdata_names = get_user_list()
 
 # --- Job Type (outside form — drives image UI) ---
 st.markdown("#### Job Type")
 job_type = st.selectbox("Job Type *", [""] + JOB_TYPES, key="job_type_select", label_visibility="collapsed")
-job_id = _stable_job_id(job_type if job_type else "Maintenance")
-st.caption(f"**Job ID:** `{job_id}`")
+job_id = _stable_job_id(job_type)
+if job_id:
+    st.caption(f"**Job ID:** `{job_id}`")
+else:
+    st.caption("Select a **Job Type** to generate a Job ID.")
 st.info(image_requirement_label(job_type))
 
 # --- Images OUTSIDE form (Streamlit forms block file upload on submit) ---
@@ -231,14 +235,25 @@ with st.form("job_entry_form"):
     with c3:
         location = st.selectbox("Location *", [""] + LOCATION_OPTIONS)
 
-    st.markdown("#### Schedule & Assignment")
-    c1, c2, c3 = st.columns(3)
+    st.markdown("#### Schedule & Attendance")
+    c1, c2 = st.columns(2)
     with c1:
         time_start = _time_select_10min("Time Start *", key="time_start")
     with c2:
         time_end = _time_select_10min("Time End", key="time_end")
-    with c3:
-        assign_by = st.selectbox("Assign by *", [""] + assign_options)
+
+    if not regdata_names:
+        st.warning("No user names found in RegData. Ask admin to update `databases_regdata.db` on GCS.")
+        attend_by = []
+    else:
+        attend_by = st.multiselect(
+            "Attend by *",
+            regdata_names,
+            placeholder="Select one or more names from RegData",
+            help="Choose all staff who attended this job.",
+        )
+        if attend_by:
+            st.caption(f"Selected: {', '.join(attend_by)}")
 
     job_status = st.selectbox("Job Status *", [""] + JOB_STATUS_OPTIONS)
 
@@ -270,7 +285,7 @@ if submitted:
         "Priority": priority,
         "Location": location,
         "Job Status": job_status,
-        "Assign by": assign_by,
+        "Attend by": ", ".join(attend_by),
         "Time Start": time_start.strftime("%H:%M:%S"),
         "Time End": time_end.strftime("%H:%M:%S") if time_end else "",
         "Task Description": task_description.strip(),
