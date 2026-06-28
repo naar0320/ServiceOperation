@@ -15,6 +15,7 @@ AB_taskreport_v1.0/
 ├── Home.py                 # Dashboard entry point
 ├── gcp_storage.py          # GCS database & image operations
 ├── pdf_report.py           # PDF report builder (required for Master User)
+├── job_ticket.py           # Job submission ticket (PNG/JPEG/PDF)
 ├── utils.py                # Auth, timezone, validation
 ├── database_schema.py      # task_reports column definitions
 ├── requirements.txt
@@ -57,7 +58,7 @@ streamlit run Home.py
 ## GitHub — what to commit
 
 **Include:**
-- `Home.py`, `gcp_storage.py`, `pdf_report.py`, `utils.py`, `database_schema.py`
+- `Home.py`, `gcp_storage.py`, `pdf_report.py`, `job_ticket.py`, `utils.py`, `database_schema.py`
 - `requirements.txt`, `README.md`, `.gitignore`
 - `.streamlit/config.toml`
 - `assets/AmmarBuilder_logo.jpeg`
