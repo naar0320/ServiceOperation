@@ -20,6 +20,7 @@ from gcp_storage import (
     save_task_report,
     upload_image,
 )
+from job_ticket import build_ticket_image, build_ticket_pdf, ticket_details
 from utils import (
     format_ts_sg,
     get_page_icon,
@@ -85,6 +86,104 @@ def _reset_job_id() -> None:
 def _clear_image_lists(*keys: str) -> None:
     for key in keys:
         st.session_state.pop(f"{key}_list", None)
+
+
+_FORM_WIDGET_KEYS = (
+    "job_type_select",
+    "time_start",
+    "time_end",
+    "severity",
+    "priority",
+    "location",
+    "attend_by_select",
+    "job_status",
+    "task_description",
+    "action",
+    "remark",
+    "verify_by",
+    "spare_text",
+    "inspection_images",
+    "before_images",
+    "after_images",
+    "inspection_mobile",
+    "before_mobile",
+    "after_mobile",
+)
+
+
+def _clear_entry_form() -> None:
+    """Reset Job Entry widgets for a fresh form."""
+    _reset_job_id()
+    _clear_image_lists("before_images", "after_images", "inspection_images")
+    for key in _FORM_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _render_completion_ticket() -> None:
+    """Show submission ticket with download options."""
+    ticket = st.session_state.get("job_ticket_record")
+    if not ticket:
+        return
+
+    details = ticket_details(ticket)
+    st.success("Job report saved to Google Cloud.")
+    st.markdown("### Job submission ticket")
+
+    col_preview, col_download = st.columns([1.2, 1])
+    with col_preview:
+        png_bytes = st.session_state.get("job_ticket_png")
+        if png_bytes:
+            st.image(png_bytes, caption="Submission ticket preview", use_container_width=True)
+
+    with col_download:
+        st.markdown("**Download ticket**")
+        job_id = details.get("Job ID", "ticket")
+        pdf_bytes = st.session_state.get("job_ticket_pdf")
+        if pdf_bytes:
+            st.download_button(
+                "Download PDF",
+                data=pdf_bytes,
+                file_name=f"job_ticket_{job_id}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+            )
+        if png_bytes:
+            st.download_button(
+                "Download PNG",
+                data=png_bytes,
+                file_name=f"job_ticket_{job_id}.png",
+                mime="image/png",
+                use_container_width=True,
+            )
+        jpeg_bytes = st.session_state.get("job_ticket_jpeg")
+        if jpeg_bytes:
+            st.download_button(
+                "Download JPEG",
+                data=jpeg_bytes,
+                file_name=f"job_ticket_{job_id}.jpeg",
+                mime="image/jpeg",
+                use_container_width=True,
+            )
+
+    with st.expander("Ticket details", expanded=True):
+        for label, value in details.items():
+            if label == "Job ID":
+                st.markdown(f"**{label}:** {value}")
+            else:
+                st.markdown(f"**{label}:** {value}")
+
+    st.caption("Keep this ticket for your records. Job ID is required for follow-up.")
+    if st.button("Start new job entry", type="primary", use_container_width=True):
+        for key in ("job_ticket_record", "job_ticket_png", "job_ticket_jpeg", "job_ticket_pdf"):
+            st.session_state.pop(key, None)
+        _clear_entry_form()
+        st.rerun()
+
+
+if st.session_state.get("job_ticket_record"):
+    _render_completion_ticket()
+    st.stop()
 
 
 def _accumulate_single_upload(list_key: str, uploader_key: str, label: str) -> list:
@@ -229,11 +328,11 @@ with st.form("job_entry_form"):
     st.markdown("#### Job Classification")
     c1, c2, c3 = st.columns(3)
     with c1:
-        severity = st.selectbox("Severity *", [""] + SEVERITY_OPTIONS)
+        severity = st.selectbox("Severity *", [""] + SEVERITY_OPTIONS, key="severity")
     with c2:
-        priority = st.selectbox("Priority *", [""] + PRIORITY_OPTIONS)
+        priority = st.selectbox("Priority *", [""] + PRIORITY_OPTIONS, key="priority")
     with c3:
-        location = st.selectbox("Location *", [""] + LOCATION_OPTIONS)
+        location = st.selectbox("Location *", [""] + LOCATION_OPTIONS, key="location")
 
     st.markdown("#### Schedule & Attendance")
     c1, c2 = st.columns(2)
@@ -251,20 +350,21 @@ with st.form("job_entry_form"):
             regdata_names,
             placeholder="Select one or more names from RegData",
             help="Choose all staff who attended this job.",
+            key="attend_by_select",
         )
         if attend_by:
             st.caption(f"Selected: {', '.join(attend_by)}")
 
-    job_status = st.selectbox("Job Status *", [""] + JOB_STATUS_OPTIONS)
+    job_status = st.selectbox("Job Status *", [""] + JOB_STATUS_OPTIONS, key="job_status")
 
     st.markdown("#### Task Details")
-    task_description = st.text_area("Task Description *", height=100, placeholder="Describe the task")
-    action = st.text_area("Action", height=80, placeholder="Action taken or planned")
-    remark = st.text_area("Remark", height=60, placeholder="Additional notes")
-    verify_by = st.text_input("Verify by", placeholder="Verifier name")
+    task_description = st.text_area("Task Description *", height=100, placeholder="Describe the task", key="task_description")
+    action = st.text_area("Action", height=80, placeholder="Action taken or planned", key="action")
+    remark = st.text_area("Remark", height=60, placeholder="Additional notes", key="remark")
+    verify_by = st.text_input("Verify by", placeholder="Verifier name", key="verify_by")
 
     st.markdown("#### Spare Parts Used")
-    spare_text = st.text_input("Spare Parts (comma-separated or NA)", placeholder="e.g. hinge x2, bolt x4")
+    spare_text = st.text_input("Spare Parts (comma-separated or NA)", placeholder="e.g. hinge x2, bolt x4", key="spare_text")
 
     submitted = st.form_submit_button("Save Report", use_container_width=True, type="primary")
 
@@ -351,11 +451,11 @@ if submitted:
 
         with st.spinner("Saving to cloud..."):
             if save_task_report(record):
-                _reset_job_id()
-                _clear_image_lists("before_images", "after_images", "inspection_images")
-                st.success(f"Report saved successfully — Job ID: **{job_id}**")
-                if total_uploaded:
-                    st.caption(f"{total_uploaded} image(s) uploaded to GCS.")
-                st.balloons()
+                st.session_state["job_ticket_record"] = record.copy()
+                st.session_state["job_ticket_png"] = build_ticket_image(record, "PNG")
+                st.session_state["job_ticket_jpeg"] = build_ticket_image(record, "JPEG")
+                st.session_state["job_ticket_pdf"] = build_ticket_pdf(record).getvalue()
+                _clear_entry_form()
+                st.rerun()
             else:
                 st.error("Failed to save report. Please try again.")
