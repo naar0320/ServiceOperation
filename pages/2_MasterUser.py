@@ -4,8 +4,14 @@ from datetime import date, timedelta
 from io import BytesIO
 
 from gcp_storage import (
+    REMOTE_DB_PATH,
+    REMOTE_REGDATA_PATH,
+    count_gcs_images,
     download_database,
     download_image,
+    get_gcs_bucket_summary,
+    inspect_gcs_sqlite,
+    list_gcs_database_files,
     list_images_for_job,
     list_uploaded_data,
     parse_image_paths,
@@ -209,25 +215,119 @@ def _generate_pdf(job_data: dict, image_paths: list) -> BytesIO | None:
         return None
 
 
+@st.cache_data(ttl=120, show_spinner="Loading database from Google Cloud…")
+def _cached_inspect_gcs(remote_path: str) -> dict:
+    return inspect_gcs_sqlite(remote_path)
+
+
+def _render_gcs_database_tab() -> None:
+    """Browse SQLite databases stored in Google Cloud Storage."""
+    st.markdown("### Google Cloud Storage — Databases")
+    st.caption(
+        "Live view of SQLite files in your GCS bucket. "
+        "Data is read directly from the cloud (not the local copy)."
+    )
+
+    summary = get_gcs_bucket_summary()
+    if summary.get("error"):
+        st.error(f"Could not connect to GCS: {summary['error']}")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Bucket", summary.get("bucket", "—"))
+    c2.metric("Location", summary.get("location", "—"))
+    c3.metric("Storage class", summary.get("storage_class", "—"))
+    c4.metric("Images in GCS", count_gcs_images())
+
+    console_url = summary.get("console_url", "")
+    if console_url:
+        st.link_button("Open bucket in Google Cloud Console", console_url, use_container_width=False)
+
+    if st.button("Refresh database view", key="gcs_db_refresh"):
+        _cached_inspect_gcs.clear()
+        st.rerun()
+
+    db_files = list_gcs_database_files()
+    if db_files:
+        st.markdown("#### Database files")
+        st.dataframe(pd.DataFrame(db_files), use_container_width=True, hide_index=True)
+    else:
+        st.warning("No `.db` files found under `databases/` in the bucket.")
+
+    st.markdown("---")
+
+    db_tab1, db_tab2 = st.tabs([
+        "Task reports (`databases_task_reports.db`)",
+        "Users & technicians (`databases_regdata.db`)",
+    ])
+
+    def _render_db_tables(remote_path: str, label: str) -> None:
+        st.caption(f"GCS path: `{remote_path}`")
+        tables = _cached_inspect_gcs(remote_path)
+        if not tables:
+            st.info(f"No tables found in {label}. The file may be missing or empty.")
+            return
+
+        for table_name, info in tables.items():
+            with st.expander(
+                f"**{table_name}** — {info['row_count']} row(s)",
+                expanded=(table_name == "task_reports" or len(tables) == 1),
+            ):
+                st.markdown("**Schema**")
+                st.dataframe(
+                    pd.DataFrame(info["columns"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.markdown("**Data**")
+                table_df = info["dataframe"]
+                if table_df.empty:
+                    st.info("Table is empty.")
+                else:
+                    st.dataframe(table_df, use_container_width=True, hide_index=True)
+                    st.download_button(
+                        f"Download {table_name} (CSV)",
+                        data=table_df.to_csv(index=False),
+                        file_name=f"{table_name}.csv",
+                        mime="text/csv",
+                        key=f"dl_{remote_path}_{table_name}",
+                    )
+
+    with db_tab1:
+        _render_db_tables(REMOTE_DB_PATH, "task reports database")
+
+    with db_tab2:
+        _render_db_tables(REMOTE_REGDATA_PATH, "registration database")
+
+
 try:
     df = download_database()
+    has_reports = df is not None and not df.empty
 
-    if df is None or df.empty:
-        st.info("No task reports available.")
+    if not has_reports:
+        st.info("No task reports available yet. Use the **GCS Database** tab to inspect cloud storage.")
+        filtered_df = pd.DataFrame()
+        readable = pd.DataFrame()
+        active_date_col = ""
+        range_start = range_end = today_sg()
     else:
         filtered_df, active_date_col, range_start, range_end = _render_date_filter(df)
         readable = _sorted_view(filtered_df)
 
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "View Job Details",
-            "All Reports",
-            "Filter by Date",
-            "Filter by Status",
-            "Search",
-            "Cloud Storage",
-        ])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "View Job Details",
+        "All Reports",
+        "Filter by Date",
+        "Filter by Status",
+        "Search",
+        "Cloud Storage",
+        "GCS Database",
+    ])
 
-        with tab1:
+    with tab1:
+        if not has_reports:
+            st.info("No reports to view yet.")
+        else:
             job_ids = ["— Select Job ID —"] + sorted(filtered_df["Job ID"].dropna().astype(str).unique().tolist())
             selected = st.selectbox("Job ID", job_ids, label_visibility="collapsed")
 
@@ -272,19 +372,22 @@ try:
             else:
                 st.info("Select a Job ID above to view details.")
 
-        with tab2:
-            if readable.empty:
-                st.info("No reports match the selected date range.")
-            else:
-                st.dataframe(readable, use_container_width=True, hide_index=True)
-                st.download_button(
-                    "Download filtered (CSV)",
-                    data=readable.to_csv(index=False),
-                    file_name=f"task_reports_{range_start}_{range_end}.csv",
-                    mime="text/csv",
-                )
+    with tab2:
+        if not has_reports or readable.empty:
+            st.info("No reports match the selected date range.")
+        else:
+            st.dataframe(readable, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download filtered (CSV)",
+                data=readable.to_csv(index=False),
+                file_name=f"task_reports_{range_start}_{range_end}.csv",
+                mime="text/csv",
+            )
 
-        with tab3:
+    with tab3:
+        if not has_reports:
+            st.info("No reports yet.")
+        else:
             st.markdown("#### Calendar filter")
             st.info(
                 f"Use the **From** and **To** calendars at the top of this page. "
@@ -315,7 +418,10 @@ try:
                     mime="text/csv",
                 )
 
-        with tab4:
+    with tab4:
+        if not has_reports:
+            st.info("No reports yet.")
+        else:
             statuses = (
                 ["All"] + sorted(filtered_df["Job Status"].dropna().astype(str).unique().tolist())
                 if "Job Status" in filtered_df.columns
@@ -329,25 +435,29 @@ try:
             else:
                 st.dataframe(status_filtered, use_container_width=True, hide_index=True)
 
-        with tab5:
-            if readable.empty:
-                st.info("No reports to search in current date range.")
-            else:
-                search_col = st.selectbox("Search field", readable.columns.tolist())
-                term = st.text_input("Search term")
-                if term:
-                    hits = readable[readable[search_col].astype(str).str.contains(term, case=False, na=False)]
-                    st.caption(f"{len(hits)} result(s)")
-                    st.dataframe(hits, use_container_width=True, hide_index=True)
+    with tab5:
+        if not has_reports or readable.empty:
+            st.info("No reports to search in current date range.")
+        else:
+            search_col = st.selectbox("Search field", readable.columns.tolist())
+            term = st.text_input("Search term")
+            if term:
+                hits = readable[readable[search_col].astype(str).str.contains(term, case=False, na=False)]
+                st.caption(f"{len(hits)} result(s)")
+                st.dataframe(hits, use_container_width=True, hide_index=True)
 
-        with tab6:
-            objects = list_uploaded_data()
-            if objects:
-                obj_df = pd.DataFrame(objects)
-                st.dataframe(obj_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("No files in storage.")
+    with tab6:
+        objects = list_uploaded_data()
+        if objects:
+            obj_df = pd.DataFrame(objects)
+            st.dataframe(obj_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No files in storage.")
 
+    with tab7:
+        _render_gcs_database_tab()
+
+    if has_reports:
         st.markdown("---")
         st.markdown("#### Summary (date-filtered)")
         c1, c2, c3, c4 = st.columns(4)
