@@ -21,6 +21,53 @@ except ImportError:
 APP_ROOT = Path(__file__).resolve().parent
 DATA_DIR = APP_ROOT / "data"
 REGDATA_DB = DATA_DIR / "regdata.db"
+LOGO_CANDIDATES = (
+    APP_ROOT / "assets" / "AmmarBuilder_logo.jpeg",
+    APP_ROOT / "assets" / "AmmarBuilder_logo.JPEG",
+    APP_ROOT / "AmmarBuilder_logo.jpeg",
+    APP_ROOT / "AmmarBuilder_logo.JPEG",
+)
+
+
+def get_logo_path() -> Optional[Path]:
+    """Return the Ammar Builder logo path if the file exists."""
+    for path in LOGO_CANDIDATES:
+        if path.exists():
+            return path
+    return None
+
+
+def get_page_icon():
+    """Streamlit page icon — logo image or emoji fallback."""
+    logo = get_logo_path()
+    return str(logo) if logo else "🛠️"
+
+
+def render_sidebar_branding() -> None:
+    """Show company logo at the top of the sidebar."""
+    logo = get_logo_path()
+    if logo:
+        st.sidebar.image(str(logo), use_container_width=True)
+        st.sidebar.caption("Ammar Builder Enterprise")
+        st.sidebar.markdown("---")
+
+
+def render_page_header(title: str, subtitle: str = "") -> None:
+    """Page header with logo aligned left and title on the right."""
+    logo = get_logo_path()
+    if logo:
+        col_logo, col_title = st.columns([1, 4], vertical_alignment="center")
+        with col_logo:
+            st.image(str(logo), use_container_width=True)
+        with col_title:
+            st.title(title)
+            if subtitle:
+                st.caption(subtitle)
+    else:
+        st.title(title)
+        if subtitle:
+            st.caption(subtitle)
+    st.markdown("---")
 
 
 # ======================================
@@ -73,6 +120,9 @@ def _clear_auth_state() -> None:
 
 
 def _render_login_form(min_level_rank: int) -> None:
+    logo = get_logo_path()
+    if logo:
+        st.image(str(logo), width=240)
     st.warning("Login required to access this page.")
     with st.form("login_form"):
         user_id = st.text_input("User ID")
@@ -134,7 +184,7 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
     - Users can login/logout here to access edit pages.
     """
     auth = get_auth_user(optional=True)
-    st.sidebar.markdown("---")
+    render_sidebar_branding()
     st.sidebar.markdown("### Navigation")
     st.sidebar.page_link("Home.py", label="Home")
     st.sidebar.markdown("---")
@@ -191,7 +241,7 @@ def hide_default_sidebar_navigation() -> None:
 
 def render_role_navigation(auth: Dict[str, Any]) -> None:
     """Display navigation menu based on user role"""
-    st.sidebar.markdown("---")
+    render_sidebar_branding()
     st.sidebar.markdown(f"**{auth.get('name', 'User')}**")
     st.sidebar.markdown(f" Rank: {auth.get('rank', 1)}")
     st.sidebar.markdown("---")

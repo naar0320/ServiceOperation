@@ -2,14 +2,13 @@ import streamlit as st
 import pandas as pd
 
 from gcp_storage import download_database
-from utils import hide_default_sidebar_navigation, render_home_auth_controls
+from utils import get_page_icon, hide_default_sidebar_navigation, render_home_auth_controls, render_page_header
 
-st.set_page_config(page_title="Maintenance Dashboard", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="Maintenance Dashboard", page_icon=get_page_icon(), layout="wide")
 hide_default_sidebar_navigation()
 render_home_auth_controls()
 
-st.title("🛠️ Maintenance Dashboard")
-st.markdown("---")
+render_page_header("Maintenance Dashboard", "Task reports overview")
 
 DISPLAY_COLUMNS = ["Job ID", "Job Type", "Job Status", "Severity", "Priority", "Location", "Create at", "Assign by"]
 STATUS_PENDING = "Pending"
