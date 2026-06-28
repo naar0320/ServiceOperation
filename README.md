@@ -96,11 +96,13 @@ client_x509_cert_url = "..."
 
 Users log in with **User ID** and **Password** from `RegData` in `databases_regdata.db` on GCS.
 
-| Level in RegData | Access |
-|------------------|--------|
-| MasterUser | Home + Job Entry + Master User |
-| User | Home + Job Entry |
-| Other | Home only |
+| Rank | RegData `level` | Role | Access |
+|------|-----------------|------|--------|
+| **3** | `MasterUser`, Admin, Manager | **Master User** | Home + Job Entry + Master User (reports, PDF/CSV, **Cloud Database**) |
+| **2** | `User`, Technician, Operator | **User** | Home + Job Entry + Master User (reports, PDF/CSV — **no** Cloud Database) |
+| **1** | `Viewer`, View only | **Viewer** | Home + Job Entry (create/edit jobs) |
+
+**Home** is available without login. All other pages require User ID + password from RegData.
 
 **Password help (sidebar / login page):**
 - **Change password** — when logged in, open *Change password* under Account

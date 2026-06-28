@@ -124,6 +124,39 @@ def format_ts_sg(dt: datetime = None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
 # ======================================
 # AUTHENTICATION
 # ======================================
+RANK_LABELS = {
+    1: "Viewer",
+    2: "User",
+    3: "Master User",
+}
+
+
+def rank_from_regdata_level(role_raw: str) -> int:
+    """Map RegData level/classification text to access rank."""
+    role = str(role_raw or "").strip().lower()
+    if role in ("masteruser", "master user", "admin", "administrator", "manager"):
+        return 3
+    if role in ("user level", "userlevel", "user", "technician", "operator"):
+        return 2
+    if role in ("viewer", "view only", "view", "readonly", "read only"):
+        return 1
+    return 1
+
+
+def role_label_for_rank(rank: int) -> str:
+    return RANK_LABELS.get(int(rank or 1), "Viewer")
+
+
+def can_access_job_entry(rank: int) -> bool:
+    return int(rank or 0) >= 1
+
+
+def can_access_master_user(rank: int) -> bool:
+    return int(rank or 0) >= 2
+
+
+def can_access_cloud_database(rank: int) -> bool:
+    return int(rank or 0) >= 3
 def _clear_auth_state() -> None:
     st.session_state["is_logged_in"] = False
     st.session_state["auth_user"] = None
@@ -149,7 +182,7 @@ def _attempt_login(user_id: str, password: str, min_level_rank: int) -> bool:
 
     user_rank = int(user_info.get("level_rank", 1) or 1)
     if user_rank < min_level_rank:
-        st.error(f"Access denied. This page requires rank {min_level_rank} or above.")
+        st.error(f"Access denied. This page requires {role_label_for_rank(min_level_rank)} access or above.")
         return False
 
     _set_auth_session(user_info)
@@ -236,7 +269,9 @@ def render_sidebar_account(auth: Dict[str, Any]) -> None:
     """Account actions: change password and logout."""
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Account")
-    st.sidebar.caption(f"**{auth.get('name', 'User')}** · Rank {auth.get('rank', 1)}")
+    st.sidebar.caption(
+        f"**{auth.get('name', 'User')}** · {role_label_for_rank(auth.get('rank', 1))}"
+    )
     _render_change_password_panel(auth, sidebar=True)
     if st.sidebar.button("Logout", use_container_width=True, key="sidebar_logout_btn"):
         _clear_auth_state()
@@ -278,7 +313,7 @@ def require_login(min_level_rank: int = 1) -> Dict[str, Any]:
 
     user_rank = int(auth.get("rank", 1) or 1)
     if user_rank < min_level_rank:
-        st.error(f"Access denied. This page requires rank {min_level_rank} or above.")
+        st.error(f"Access denied. This page requires {role_label_for_rank(min_level_rank)} access or above.")
         st.stop()
     return auth
 
@@ -306,9 +341,9 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
 
     if auth:
         rank = int(auth.get("rank", 1) or 1)
-        if rank >= 2:
+        if can_access_job_entry(rank):
             st.sidebar.page_link("pages/3_JobEntry.py", label="Job Entry")
-        if rank >= 3:
+        if can_access_master_user(rank):
             st.sidebar.page_link("pages/2_MasterUser.py", label="Master User")
         render_sidebar_account(auth)
         return auth
@@ -354,17 +389,16 @@ def render_role_navigation(auth: Dict[str, Any]) -> None:
     """Display navigation menu based on user role"""
     render_sidebar_branding()
     st.sidebar.markdown(f"**{auth.get('name', 'User')}**")
-    st.sidebar.markdown(f" Rank: {auth.get('rank', 1)}")
+    st.sidebar.caption(role_label_for_rank(auth.get("rank", 1)))
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🧭 Navigation")
     
-    rank = auth.get("rank", 1)
+    rank = int(auth.get("rank", 1) or 1)
     
-    if rank >= 1:
-        st.sidebar.page_link("Home.py", label="Home")
-    if rank >= 2:
+    st.sidebar.page_link("Home.py", label="Home")
+    if can_access_job_entry(rank):
         st.sidebar.page_link("pages/3_JobEntry.py", label="Job Entry")
-    if rank >= 3:
+    if can_access_master_user(rank):
         st.sidebar.page_link("pages/2_MasterUser.py", label="Master User")
 
     render_sidebar_account(auth)
@@ -478,24 +512,14 @@ def lookup_user_in_regdata(user_id: str) -> Dict[str, Any]:
                     or user_id.title()
                 )
 
-                # Classification rules:
-                # - MasterUser => full clearance (rank 3)
-                # - User Level => TaskUpdate + Home (rank 2)
-                # - fallback => Home only (rank 1)
                 role_raw = str(
                     row_dict.get("classification")
                     or row_dict.get("level")
                     or row_dict.get("userlevel")
                     or row_dict.get("role")
                     or ""
-                ).strip().lower()
-
-                if role_raw in ("masteruser", "master user", "admin", "administrator", "manager"):
-                    level_rank = 3
-                elif role_raw in ("user level", "userlevel", "user", "technician", "operator"):
-                    level_rank = 2
-                else:
-                    level_rank = 1
+                )
+                level_rank = rank_from_regdata_level(role_raw)
 
                 return {
                     "ok": True,

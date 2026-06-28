@@ -14,6 +14,7 @@ from google.cloud import storage
 from google.oauth2 import service_account
 
 from database_schema import CREATE_TABLE_SQL, REMOVED_COLUMNS, TASK_REPORT_COLUMNS, TASK_REPORTS_TABLE
+from utils import rank_from_regdata_level
 
 # ======================================
 # Configuration
@@ -304,14 +305,8 @@ def _user_info_from_regdata_row(row: sqlite3.Row, columns: dict[str, str]) -> di
         or row_dict.get("userlevel")
         or row_dict.get("role")
         or ""
-    ).strip().lower()
-
-    if role_raw in ("masteruser", "master user", "admin", "administrator", "manager"):
-        level_rank = 3
-    elif role_raw in ("user level", "userlevel", "user", "technician", "operator"):
-        level_rank = 2
-    else:
-        level_rank = 1
+    )
+    level_rank = rank_from_regdata_level(role_raw)
 
     user_id = str(row_dict.get("userid") or row_dict.get("user_id") or "").strip()
     return {
