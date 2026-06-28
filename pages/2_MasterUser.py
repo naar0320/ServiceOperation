@@ -1,7 +1,9 @@
-import streamlit as st
-import pandas as pd
+import zipfile
 from datetime import date, timedelta
 from io import BytesIO
+
+import pandas as pd
+import streamlit as st
 
 from gcp_storage import (
     REMOTE_DB_PATH,
@@ -11,9 +13,7 @@ from gcp_storage import (
     download_image,
     get_gcs_bucket_summary,
     inspect_gcs_sqlite,
-    list_gcs_database_files,
     list_images_for_job,
-    list_uploaded_data,
     parse_image_paths,
 )
 from utils import format_ts_sg, hide_default_sidebar_navigation, require_login, render_role_navigation, today_sg
@@ -25,19 +25,18 @@ auth = require_login(min_level_rank=3)
 render_role_navigation(auth)
 
 st.title("📋 Review & Download Reports")
-st.markdown("---")
 
+LIST_COLUMNS = [
+    "Job ID", "Create at", "Job Status", "Priority", "Job Type",
+    "Location", "Assign by", "Create By",
+]
 DETAIL_COLUMNS = [
     "Job ID", "Job Type", "Job Status", "Severity", "Priority",
-    "Location", "Create By", "Create at",
+    "Location", "Create By", "Create at", "Date",
     "Assign by", "Time Start", "Time End",
     "Task Description", "Action", "Remark", "Verify by", "Spare Parts Used",
 ]
-TABLE_COLUMNS = [
-    "Job ID", "Create at", "Job Status", "Priority", "Severity",
-    "Job Type", "Location", "Assign by", "Create By", "Task Description",
-]
-DATE_FILTER_COLUMNS = ["Create at", "Date"]
+DATE_COLUMNS = ["Create at", "Date"]
 
 
 def _priority_score(value: str) -> int:
@@ -49,26 +48,7 @@ def _status_score(value: str) -> int:
 
 
 def _parse_dates(series: pd.Series) -> pd.Series:
-    """Parse mixed date/datetime strings to normalized dates."""
     return pd.to_datetime(series.astype(str).str.strip(), errors="coerce").dt.normalize()
-
-
-def _date_bounds(df: pd.DataFrame, date_col: str) -> tuple[date, date]:
-    today = today_sg()
-    if date_col not in df.columns or df.empty:
-        return today - timedelta(days=30), today
-    parsed = _parse_dates(df[date_col]).dropna()
-    if parsed.empty:
-        return today - timedelta(days=30), today
-    return parsed.min().date(), parsed.max().date()
-
-
-def _apply_date_filter(df: pd.DataFrame, date_col: str, start: date, end: date) -> pd.DataFrame:
-    if df.empty or date_col not in df.columns:
-        return df
-    parsed = _parse_dates(df[date_col])
-    mask = parsed.notna() & (parsed >= pd.Timestamp(start)) & (parsed <= pd.Timestamp(end))
-    return df[mask]
 
 
 def _sorted_view(df: pd.DataFrame) -> pd.DataFrame:
@@ -76,95 +56,91 @@ def _sorted_view(df: pd.DataFrame) -> pd.DataFrame:
     view["__created"] = pd.to_datetime(view.get("Create at"), errors="coerce")
     view["__priority"] = view.get("Priority", pd.Series(dtype=str)).map(_priority_score)
     view["__status"] = view.get("Job Status", pd.Series(dtype=str)).map(_status_score)
-    view = view.sort_values(by=["__status", "__priority", "__created"], ascending=[False, False, False], na_position="last")
-    cols = [c for c in TABLE_COLUMNS if c in view.columns]
+    view = view.sort_values(
+        by=["__status", "__priority", "__created"],
+        ascending=[False, False, False],
+        na_position="last",
+    )
+    cols = [c for c in LIST_COLUMNS if c in view.columns]
     extra = [c for c in view.columns if c not in cols and not c.startswith("__")]
     return view[cols + extra]
 
 
-def _render_date_filter(df: pd.DataFrame) -> tuple[pd.DataFrame, str, date, date]:
-    """Calendar date-range filter shared across report tabs."""
-    available_cols = [c for c in DATE_FILTER_COLUMNS if c in df.columns]
-    if not available_cols:
-        return df, "", today_sg(), today_sg()
-
-    st.markdown("### 📅 Filter by Date")
-    c1, c2, c3 = st.columns([2, 2, 1])
-
-    with c1:
-        date_col = st.selectbox(
-            "Date field",
-            available_cols,
-            format_func=lambda x: {
-                "Create at": "Created date/time",
-                "Date": "Report date",
-            }.get(x, x),
-        )
-
-    min_d, max_d = _date_bounds(df, date_col)
-
-    with c2:
-        preset = st.selectbox(
-            "Quick range",
-            ["Custom", "Today", "Last 7 days", "Last 30 days", "This month", "All dates"],
-            index=5,
-        )
+def _apply_report_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """Inline filters for the Reports tab."""
+    if df.empty:
+        return df
 
     today = today_sg()
-    if preset == "Today":
-        default_start, default_end = today, today
-    elif preset == "Last 7 days":
-        default_start, default_end = today - timedelta(days=6), today
-    elif preset == "Last 30 days":
-        default_start, default_end = today - timedelta(days=29), today
-    elif preset == "This month":
-        default_start = today.replace(day=1)
-        default_end = today
-    elif preset == "All dates":
-        default_start, default_end = min_d, max_d
+    c1, c2, c3 = st.columns([2, 2, 3])
+
+    with c1:
+        date_preset = st.selectbox(
+            "Date range",
+            ["All dates", "Today", "Last 7 days", "Last 30 days", "This month", "Custom"],
+            index=0,
+        )
+
+    date_col = next((c for c in DATE_COLUMNS if c in df.columns), DATE_COLUMNS[0])
+    parsed = _parse_dates(df[date_col])
+    min_d = parsed.min().date() if parsed.notna().any() else today - timedelta(days=30)
+    max_d = parsed.max().date() if parsed.notna().any() else today
+
+    if date_preset == "Today":
+        start_d, end_d = today, today
+    elif date_preset == "Last 7 days":
+        start_d, end_d = today - timedelta(days=6), today
+    elif date_preset == "Last 30 days":
+        start_d, end_d = today - timedelta(days=29), today
+    elif date_preset == "This month":
+        start_d, end_d = today.replace(day=1), today
+    elif date_preset == "Custom":
+        d1, d2 = st.columns(2)
+        with d1:
+            start_d = st.date_input("From", value=min_d, min_value=min_d, max_value=max_d, key="rpt_from")
+        with d2:
+            end_d = st.date_input("To", value=max_d, min_value=min_d, max_value=max_d, key="rpt_to")
+        if start_d > end_d:
+            start_d, end_d = end_d, start_d
     else:
-        default_start, default_end = min_d, max_d
+        start_d, end_d = min_d, max_d
+
+    with c2:
+        statuses = ["All"] + sorted(df["Job Status"].dropna().astype(str).unique().tolist()) if "Job Status" in df.columns else ["All"]
+        status = st.selectbox("Status", statuses)
 
     with c3:
-        use_filter = st.toggle("Apply filter", value=preset != "All dates")
+        search = st.text_input("Search", placeholder="Job ID, location, description…")
 
-    cal1, cal2 = st.columns(2)
-    with cal1:
-        start_date = st.date_input(
-            "From",
-            value=default_start,
-            min_value=min_d,
-            max_value=max_d,
-            key="filter_date_start",
-        )
-    with cal2:
-        end_date = st.date_input(
-            "To",
-            value=default_end,
-            min_value=min_d,
-            max_value=max_d,
-            key="filter_date_end",
-        )
+    filtered = df.copy()
+    if date_preset != "All dates":
+        mask = parsed.notna() & (parsed >= pd.Timestamp(start_d)) & (parsed <= pd.Timestamp(end_d))
+        filtered = filtered[mask]
 
-    if start_date > end_date:
-        st.warning("Start date is after end date — swapped automatically.")
-        start_date, end_date = end_date, start_date
+    if status != "All" and "Job Status" in filtered.columns:
+        filtered = filtered[filtered["Job Status"].astype(str) == status]
 
-    filtered = df
-    if use_filter:
-        filtered = _apply_date_filter(df, date_col, start_date, end_date)
-        st.caption(
-            f"Showing **{len(filtered)}** of **{len(df)}** reports "
-            f"({date_col}: {start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')})"
-        )
-    else:
-        st.caption(f"Showing all **{len(df)}** reports (date filter off)")
+    if search.strip():
+        term = search.strip().lower()
+        search_cols = [c for c in ["Job ID", "Location", "Task Description", "Create By", "Assign by"] if c in filtered.columns]
+        if search_cols:
+            mask = pd.Series(False, index=filtered.index)
+            for col in search_cols:
+                mask |= filtered[col].astype(str).str.lower().str.contains(term, na=False)
+            filtered = filtered[mask]
 
-    st.markdown("---")
-    return filtered, date_col, start_date, end_date
+    st.caption(f"**{len(filtered)}** of **{len(df)}** reports shown")
+    return filtered
 
 
-def _generate_pdf(job_data: dict, image_paths: list) -> BytesIO | None:
+def _job_images(job_id: str, job: dict) -> list[str]:
+    paths = list_images_for_job(job_id)
+    paths += parse_image_paths(job.get("Before Images", ""))
+    paths += parse_image_paths(job.get("After Images", ""))
+    return sorted(set(paths))
+
+
+def _generate_pdf(job_data: dict, image_paths: list, include_images: bool = True) -> BytesIO | None:
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
@@ -178,293 +154,252 @@ def _generate_pdf(job_data: dict, image_paths: list) -> BytesIO | None:
         styles = getSampleStyleSheet()
         elements = []
 
-        title = ParagraphStyle("title", parent=styles["Heading1"], fontSize=20, alignment=1, spaceAfter=12)
+        job_id = str(job_data.get("Job ID", "report"))
+        title = ParagraphStyle("title", parent=styles["Heading1"], fontSize=18, alignment=1, spaceAfter=10)
         elements.append(Paragraph("Job Report — Ammar Builders Maintenance", title))
-        elements.append(Spacer(1, 0.2 * inch))
+        elements.append(Paragraph(f"<b>Job ID:</b> {job_id}", styles["Normal"]))
+        elements.append(Spacer(1, 0.15 * inch))
 
-        rows = [[str(k), str(v)[:200]] for k, v in job_data.items() if not str(k).startswith("__")]
-        table = Table(rows, colWidths=[2 * inch, 4 * inch])
+        rows = []
+        for col in DETAIL_COLUMNS:
+            if col in job_data and job_data[col] not in (None, ""):
+                rows.append([col, str(job_data[col])[:500]])
+        for k, v in job_data.items():
+            if k not in DETAIL_COLUMNS and not str(k).startswith("__") and v not in (None, ""):
+                rows.append([str(k), str(v)[:500]])
+
+        table = Table(rows, colWidths=[2 * inch, 4.2 * inch])
         table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f0f0f0")),
+            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f5f5f5")),
             ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         elements.append(table)
 
-        if image_paths:
-            elements.append(Spacer(1, 0.3 * inch))
+        if include_images and image_paths:
+            elements.append(Spacer(1, 0.25 * inch))
             elements.append(Paragraph("Images", styles["Heading2"]))
-            for path in image_paths[:8]:
+            for path in image_paths[:12]:
                 img_bytes = download_image(path)
                 if img_bytes:
                     elements.append(RLImage(BytesIO(img_bytes), width=3 * inch, height=2 * inch))
-                    elements.append(Spacer(1, 0.1 * inch))
+                    elements.append(Spacer(1, 0.08 * inch))
 
-        elements.append(Spacer(1, 0.2 * inch))
+        elements.append(Spacer(1, 0.15 * inch))
         elements.append(Paragraph(f"<font size=8>Generated {format_ts_sg()}</font>", styles["Normal"]))
         doc.build(elements)
         buffer.seek(0)
         return buffer
     except ImportError:
-        st.error("reportlab not installed")
+        st.error("reportlab not installed — add it to requirements.txt")
         return None
     except Exception as e:
         st.error(f"PDF error: {e}")
         return None
 
 
-@st.cache_data(ttl=120, show_spinner="Loading database from Google Cloud…")
+def _build_pdf_zip(reports_df: pd.DataFrame, include_images: bool) -> BytesIO | None:
+    if reports_df.empty:
+        return None
+
+    zip_buffer = BytesIO()
+    added = 0
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for _, row in reports_df.iterrows():
+            job = row.to_dict()
+            job_id = str(job.get("Job ID", f"report_{added + 1}"))
+            images = _job_images(job_id, job) if include_images else []
+            pdf = _generate_pdf(job, images, include_images=include_images)
+            if pdf:
+                zf.writestr(f"job_report_{job_id}.pdf", pdf.getvalue())
+                added += 1
+
+    if added == 0:
+        return None
+    zip_buffer.seek(0)
+    return zip_buffer
+
+
+@st.cache_data(ttl=120, show_spinner="Loading cloud database…")
 def _cached_inspect_gcs(remote_path: str) -> dict:
     return inspect_gcs_sqlite(remote_path)
 
 
-def _render_gcs_database_tab() -> None:
-    """Browse SQLite databases stored in Google Cloud Storage."""
-    st.markdown("### Google Cloud Storage — Databases")
-    st.caption(
-        "Live view of SQLite files in your GCS bucket. "
-        "Data is read directly from the cloud (not the local copy)."
-    )
+def _render_reports_tab(df: pd.DataFrame) -> None:
+    if df is None or df.empty:
+        st.info("No task reports yet. New jobs from **Job Entry** will appear here.")
+        return
+
+    filtered = _apply_report_filters(df)
+    readable = _sorted_view(filtered)
+
+    if "Job Status" in filtered.columns:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total", len(filtered))
+        c2.metric("Pending", len(filtered[filtered["Job Status"] == "Pending"]))
+        c3.metric("In Progress", len(filtered[filtered["Job Status"] == "In Progress"]))
+        c4.metric("Completed", len(filtered[filtered["Job Status"] == "Completed"]))
+
+    st.markdown("#### Download")
+    d1, d2 = st.columns([2, 2])
+    with d1:
+        include_images = st.checkbox("Include images in PDFs", value=True)
+    with d2:
+        if not readable.empty:
+            st.download_button(
+                "Download table (CSV)",
+                data=readable.to_csv(index=False),
+                file_name=f"task_reports_{today_sg().isoformat()}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+    if not readable.empty:
+        if st.button(
+            f"Prepare all PDFs ({len(filtered)} reports)",
+            type="primary",
+            use_container_width=True,
+        ):
+            with st.spinner(f"Building {len(filtered)} PDF(s)…"):
+                zip_data = _build_pdf_zip(filtered, include_images)
+                if zip_data:
+                    st.session_state["report_pdf_zip"] = zip_data.getvalue()
+                    st.session_state["report_pdf_count"] = len(filtered)
+                else:
+                    st.session_state.pop("report_pdf_zip", None)
+                    st.error("Could not create PDF files.")
+
+        if st.session_state.get("report_pdf_zip"):
+            st.download_button(
+                f"Download ZIP — {st.session_state.get('report_pdf_count', 0)} PDF(s) ready",
+                data=st.session_state["report_pdf_zip"],
+                file_name=f"job_reports_{today_sg().isoformat()}.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+            st.caption("Click **Prepare all PDFs** again after changing filters.")
+
+    st.markdown("#### Report list")
+    if readable.empty:
+        st.warning("No reports match your filters. Try **All dates** or clear the search box.")
+        return
+
+    display_cols = [c for c in LIST_COLUMNS if c in readable.columns]
+    st.dataframe(readable[display_cols], use_container_width=True, hide_index=True)
+
+    st.markdown("#### Job detail")
+    job_ids = sorted(filtered["Job ID"].dropna().astype(str).unique().tolist())
+    selected = st.selectbox("Select Job ID", job_ids, label_visibility="collapsed")
+
+    if selected:
+        row = filtered[filtered["Job ID"].astype(str) == selected]
+        if row.empty:
+            return
+        job = row.iloc[0].to_dict()
+
+        left, right = st.columns([1, 1])
+        with left:
+            for col in DETAIL_COLUMNS:
+                if col in job and job[col] not in (None, ""):
+                    st.markdown(f"**{col}:** {job[col]}")
+
+        all_images = _job_images(selected, job)
+        with right:
+            st.markdown("**Images**")
+            if all_images:
+                for path in all_images[:6]:
+                    img_bytes = download_image(path)
+                    if img_bytes:
+                        st.image(img_bytes, caption=path.split("/")[-1], use_container_width=True)
+                if len(all_images) > 6:
+                    st.caption(f"+ {len(all_images) - 6} more image(s) included in PDF")
+            else:
+                st.caption("No images for this job.")
+
+        pdf = _generate_pdf(job, all_images, include_images=include_images)
+        if pdf:
+            st.download_button(
+                f"Download PDF — {selected}",
+                data=pdf,
+                file_name=f"job_report_{selected}.pdf",
+                mime="application/pdf",
+            )
+
+
+def _render_cloud_database_tab() -> None:
+    st.caption("Live data from Google Cloud Storage — task reports, users, and technicians.")
 
     summary = get_gcs_bucket_summary()
     if summary.get("error"):
-        st.error(f"Could not connect to GCS: {summary['error']}")
+        st.error(f"Could not connect to Google Cloud: {summary['error']}")
         return
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Bucket", summary.get("bucket", "—"))
-    c2.metric("Location", summary.get("location", "—"))
-    c3.metric("Storage class", summary.get("storage_class", "—"))
-    c4.metric("Images in GCS", count_gcs_images())
+    head1, head2 = st.columns([3, 1])
+    with head1:
+        st.markdown(f"**Bucket:** `{summary.get('bucket', '—')}` · **Location:** {summary.get('location', '—')}")
+    with head2:
+        if st.button("Refresh", use_container_width=True):
+            _cached_inspect_gcs.clear()
+            st.rerun()
 
     console_url = summary.get("console_url", "")
     if console_url:
-        st.link_button("Open bucket in Google Cloud Console", console_url, use_container_width=False)
+        st.link_button("Open in Google Cloud Console", console_url)
 
-    if st.button("Refresh database view", key="gcs_db_refresh"):
-        _cached_inspect_gcs.clear()
-        st.rerun()
+    db_options = {
+        "Task reports": REMOTE_DB_PATH,
+        "Users & technicians": REMOTE_REGDATA_PATH,
+    }
+    db_label = st.selectbox("Database", list(db_options.keys()))
+    remote_path = db_options[db_label]
 
-    db_files = list_gcs_database_files()
-    if db_files:
-        st.markdown("#### Database files")
-        st.dataframe(pd.DataFrame(db_files), use_container_width=True, hide_index=True)
+    tables = _cached_inspect_gcs(remote_path)
+    if not tables:
+        st.info("No tables found in this database file.")
+        return
+
+    table_names = list(tables.keys())
+    default_table = "task_reports" if "task_reports" in table_names else table_names[0]
+    table_name = st.selectbox(
+        "Table",
+        table_names,
+        index=table_names.index(default_table) if default_table in table_names else 0,
+    )
+
+    info = tables[table_name]
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Rows", info["row_count"])
+    m2.metric("Columns", len(info["columns"]))
+    m3.metric("Images in bucket", count_gcs_images())
+
+    table_df = info["dataframe"]
+    if table_df.empty:
+        st.info("This table is empty.")
     else:
-        st.warning("No `.db` files found under `databases/` in the bucket.")
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
+        st.download_button(
+            f"Download {table_name}.csv",
+            data=table_df.to_csv(index=False),
+            file_name=f"{table_name}.csv",
+            mime="text/csv",
+        )
 
-    st.markdown("---")
-
-    db_tab1, db_tab2 = st.tabs([
-        "Task reports (`databases_task_reports.db`)",
-        "Users & technicians (`databases_regdata.db`)",
-    ])
-
-    def _render_db_tables(remote_path: str, label: str) -> None:
-        st.caption(f"GCS path: `{remote_path}`")
-        tables = _cached_inspect_gcs(remote_path)
-        if not tables:
-            st.info(f"No tables found in {label}. The file may be missing or empty.")
-            return
-
-        for table_name, info in tables.items():
-            with st.expander(
-                f"**{table_name}** — {info['row_count']} row(s)",
-                expanded=(table_name == "task_reports" or len(tables) == 1),
-            ):
-                st.markdown("**Schema**")
-                st.dataframe(
-                    pd.DataFrame(info["columns"]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-                st.markdown("**Data**")
-                table_df = info["dataframe"]
-                if table_df.empty:
-                    st.info("Table is empty.")
-                else:
-                    st.dataframe(table_df, use_container_width=True, hide_index=True)
-                    st.download_button(
-                        f"Download {table_name} (CSV)",
-                        data=table_df.to_csv(index=False),
-                        file_name=f"{table_name}.csv",
-                        mime="text/csv",
-                        key=f"dl_{remote_path}_{table_name}",
-                    )
-
-    with db_tab1:
-        _render_db_tables(REMOTE_DB_PATH, "task reports database")
-
-    with db_tab2:
-        _render_db_tables(REMOTE_REGDATA_PATH, "registration database")
+    with st.expander("Column schema"):
+        st.dataframe(pd.DataFrame(info["columns"]), use_container_width=True, hide_index=True)
 
 
 try:
     df = download_database()
-    has_reports = df is not None and not df.empty
 
-    if not has_reports:
-        st.info("No task reports available yet. Use the **GCS Database** tab to inspect cloud storage.")
-        filtered_df = pd.DataFrame()
-        readable = pd.DataFrame()
-        active_date_col = ""
-        range_start = range_end = today_sg()
-    else:
-        filtered_df, active_date_col, range_start, range_end = _render_date_filter(df)
-        readable = _sorted_view(filtered_df)
+    tab_reports, tab_database = st.tabs(["Reports", "Cloud Database"])
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "View Job Details",
-        "All Reports",
-        "Filter by Date",
-        "Filter by Status",
-        "Search",
-        "Cloud Storage",
-        "GCS Database",
-    ])
+    with tab_reports:
+        _render_reports_tab(df)
 
-    with tab1:
-        if not has_reports:
-            st.info("No reports to view yet.")
-        else:
-            job_ids = ["— Select Job ID —"] + sorted(filtered_df["Job ID"].dropna().astype(str).unique().tolist())
-            selected = st.selectbox("Job ID", job_ids, label_visibility="collapsed")
-
-            if selected != "— Select Job ID —":
-                row = filtered_df[filtered_df["Job ID"].astype(str) == selected]
-                if not row.empty:
-                    job = row.iloc[0].to_dict()
-                    st.markdown(f"## Job Report: **{selected}**")
-                    st.markdown("---")
-
-                    for col_name in DETAIL_COLUMNS:
-                        if col_name in job and job[col_name] not in (None, ""):
-                            st.markdown(f"**{col_name}:** {job[col_name]}")
-
-                    image_paths = list_images_for_job(selected)
-                    stored_before = parse_image_paths(job.get("Before Images", ""))
-                    stored_after = parse_image_paths(job.get("After Images", ""))
-                    all_images = sorted(set(image_paths + stored_before + stored_after))
-
-                    st.markdown("---")
-                    st.markdown("### Images")
-                    if all_images:
-                        cols = st.columns(2)
-                        for idx, path in enumerate(all_images):
-                            img_bytes = download_image(path)
-                            if img_bytes:
-                                with cols[idx % 2]:
-                                    st.image(img_bytes, caption=path.split("/")[-1], use_container_width=True)
-                    else:
-                        st.info("No images for this job.")
-
-                    pdf = _generate_pdf(job, all_images)
-                    if pdf:
-                        st.download_button(
-                            "Download PDF",
-                            data=pdf,
-                            file_name=f"job_report_{selected}.pdf",
-                            mime="application/pdf",
-                        )
-                else:
-                    st.warning("Job not found in current date filter. Widen the date range above.")
-            else:
-                st.info("Select a Job ID above to view details.")
-
-    with tab2:
-        if not has_reports or readable.empty:
-            st.info("No reports match the selected date range.")
-        else:
-            st.dataframe(readable, use_container_width=True, hide_index=True)
-            st.download_button(
-                "Download filtered (CSV)",
-                data=readable.to_csv(index=False),
-                file_name=f"task_reports_{range_start}_{range_end}.csv",
-                mime="text/csv",
-            )
-
-    with tab3:
-        if not has_reports:
-            st.info("No reports yet.")
-        else:
-            st.markdown("#### Calendar filter")
-            st.info(
-                f"Use the **From** and **To** calendars at the top of this page. "
-                f"Currently filtering **{active_date_col}**."
-            )
-
-            if readable.empty:
-                st.warning("No reports in this date range.")
-            else:
-                summary = readable.copy()
-                summary["__day"] = _parse_dates(summary[active_date_col]).dt.strftime("%Y-%m-%d")
-                daily = (
-                    summary.groupby("__day", dropna=True)
-                    .size()
-                    .reset_index(name="Reports")
-                    .sort_values("__day", ascending=False)
-                )
-                daily.columns = ["Date", "Reports"]
-                st.markdown("##### Reports per day")
-                st.dataframe(daily, use_container_width=True, hide_index=True)
-
-                st.markdown("##### Reports in range")
-                st.dataframe(readable, use_container_width=True, hide_index=True)
-                st.download_button(
-                    "Download date-filtered (CSV)",
-                    data=readable.to_csv(index=False),
-                    file_name=f"task_reports_{active_date_col}_{range_start}_{range_end}.csv",
-                    mime="text/csv",
-                )
-
-    with tab4:
-        if not has_reports:
-            st.info("No reports yet.")
-        else:
-            statuses = (
-                ["All"] + sorted(filtered_df["Job Status"].dropna().astype(str).unique().tolist())
-                if "Job Status" in filtered_df.columns
-                else ["All"]
-            )
-            chosen = st.selectbox("Status", statuses)
-            status_filtered = readable if chosen == "All" else readable[readable["Job Status"].astype(str) == chosen]
-            st.caption(f"{len(status_filtered)} report(s)")
-            if status_filtered.empty:
-                st.info("No reports match status and date filters.")
-            else:
-                st.dataframe(status_filtered, use_container_width=True, hide_index=True)
-
-    with tab5:
-        if not has_reports or readable.empty:
-            st.info("No reports to search in current date range.")
-        else:
-            search_col = st.selectbox("Search field", readable.columns.tolist())
-            term = st.text_input("Search term")
-            if term:
-                hits = readable[readable[search_col].astype(str).str.contains(term, case=False, na=False)]
-                st.caption(f"{len(hits)} result(s)")
-                st.dataframe(hits, use_container_width=True, hide_index=True)
-
-    with tab6:
-        objects = list_uploaded_data()
-        if objects:
-            obj_df = pd.DataFrame(objects)
-            st.dataframe(obj_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No files in storage.")
-
-    with tab7:
-        _render_gcs_database_tab()
-
-    if has_reports:
-        st.markdown("---")
-        st.markdown("#### Summary (date-filtered)")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total", len(filtered_df))
-        c2.metric("Pending", len(filtered_df[filtered_df["Job Status"] == "Pending"]) if "Job Status" in filtered_df.columns else 0)
-        c3.metric("In Progress", len(filtered_df[filtered_df["Job Status"] == "In Progress"]) if "Job Status" in filtered_df.columns else 0)
-        c4.metric("Completed", len(filtered_df[filtered_df["Job Status"] == "Completed"]) if "Job Status" in filtered_df.columns else 0)
+    with tab_database:
+        _render_cloud_database_tab()
 
 except Exception as e:
-    st.error(f"Error loading reports: {e}")
+    st.error(f"Error loading page: {e}")
