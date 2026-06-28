@@ -14,9 +14,12 @@ Streamlit app for maintenance task reporting. Data is stored in Google Cloud Sto
 AB_taskreport_v1.0/
 ├── Home.py                 # Dashboard entry point
 ├── gcp_storage.py          # GCS database & image operations
+├── pdf_report.py           # PDF report builder (required for Master User)
 ├── utils.py                # Auth, timezone, validation
 ├── database_schema.py      # task_reports column definitions
 ├── requirements.txt
+├── assets/
+│   └── AmmarBuilder_logo.jpeg   # Company logo (sidebar, header, PDF)
 ├── .streamlit/
 │   └── config.toml         # Streamlit config (safe to commit)
 ├── pages/
@@ -54,9 +57,10 @@ streamlit run Home.py
 ## GitHub — what to commit
 
 **Include:**
-- `Home.py`, `gcp_storage.py`, `utils.py`, `database_schema.py`
+- `Home.py`, `gcp_storage.py`, `pdf_report.py`, `utils.py`, `database_schema.py`
 - `requirements.txt`, `README.md`, `.gitignore`
 - `.streamlit/config.toml`
+- `assets/AmmarBuilder_logo.jpeg`
 - `pages/2_MasterUser.py`, `pages/3_JobEntry.py`
 
 **Never commit:**
