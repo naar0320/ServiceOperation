@@ -15,7 +15,9 @@ from gcp_storage import (
     inspect_gcs_sqlite,
     list_images_for_job,
     parse_image_paths,
+    save_gcs_table,
 )
+from database_schema import TASK_REPORTS_TABLE
 from pdf_report import build_job_report_pdf, image_caption_from_path
 from utils import (
     format_ts_sg,
@@ -38,7 +40,7 @@ user_rank = int(auth.get("rank", 1) or 1)
 render_page_header(
     "Review & Download Reports",
     "Filter reports and export PDF / CSV"
-    + (" · Cloud DB for Master User only" if not can_access_cloud_database(user_rank) else ""),
+    + (" · Cloud DB for Master User only" if not can_access_cloud_database(user_rank) else " · Cloud DB editable"),
 )
 
 LIST_COLUMNS = [
@@ -315,7 +317,14 @@ def _render_reports_tab(df: pd.DataFrame) -> None:
 
 
 def _render_cloud_database_tab() -> None:
-    st.caption("Live data from Google Cloud Storage — task reports, users, and technicians.")
+    st.caption(
+        "Live data from Google Cloud Storage. Edit rows below and click **Save to Google Cloud** "
+        "to update the database file in the bucket."
+    )
+    st.warning(
+        "Changes are written directly to production data. Double-check rows before saving, "
+        "especially user passwords and job records."
+    )
 
     summary = get_gcs_bucket_summary()
     if summary.get("error"):
@@ -347,7 +356,7 @@ def _render_cloud_database_tab() -> None:
         return
 
     table_names = list(tables.keys())
-    default_table = "task_reports" if "task_reports" in table_names else table_names[0]
+    default_table = TASK_REPORTS_TABLE if TASK_REPORTS_TABLE in table_names else table_names[0]
     table_name = st.selectbox(
         "Table",
         table_names,
@@ -362,14 +371,41 @@ def _render_cloud_database_tab() -> None:
 
     table_df = info["dataframe"]
     if table_df.empty:
-        st.info("This table is empty.")
-    else:
-        st.dataframe(table_df, use_container_width=True, hide_index=True)
+        st.info("This table is empty. Add rows in the editor below, then save.")
+
+    editor_key = f"cloud_db_editor_{remote_path}_{table_name}"
+    edited_df = st.data_editor(
+        table_df,
+        key=editor_key,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    save_col, download_col = st.columns([1, 1])
+    with save_col:
+        if st.button("Save to Google Cloud", type="primary", use_container_width=True):
+            normalize = remote_path == REMOTE_DB_PATH and table_name == TASK_REPORTS_TABLE
+            ok, message = save_gcs_table(
+                remote_path,
+                table_name,
+                edited_df,
+                normalize_task_reports=normalize,
+            )
+            if ok:
+                st.success(message)
+                _cached_inspect_gcs.clear()
+                st.rerun()
+            else:
+                st.error(message)
+
+    with download_col:
         st.download_button(
             f"Download {table_name}.csv",
-            data=table_df.to_csv(index=False),
+            data=edited_df.to_csv(index=False),
             file_name=f"{table_name}.csv",
             mime="text/csv",
+            use_container_width=True,
         )
 
     with st.expander("Column schema"):
