@@ -129,6 +129,101 @@ def _clear_auth_state() -> None:
     st.session_state["auth_user"] = None
 
 
+def _set_auth_session(user_info: Dict[str, Any]) -> None:
+    st.session_state["is_logged_in"] = True
+    st.session_state["auth_user"] = {
+        "user_id": user_info.get("user_id", ""),
+        "name": user_info.get("display_name", "User"),
+        "rank": int(user_info.get("level_rank", 1) or 1),
+    }
+
+
+def _attempt_login(user_id: str, password: str, min_level_rank: int) -> bool:
+    from gcp_storage import authenticate_regdata_user
+
+    user_info = authenticate_regdata_user(user_id, password)
+    if not user_info.get("ok", False):
+        st.error(user_info.get("error", "Invalid User ID or password."))
+        return False
+
+    user_rank = int(user_info.get("level_rank", 1) or 1)
+    if user_rank < min_level_rank:
+        st.error(f"Access denied. This page requires rank {min_level_rank} or above.")
+        return False
+
+    _set_auth_session(user_info)
+    st.success("Login successful")
+    st.rerun()
+
+
+def _render_forgot_password_panel(*, sidebar: bool = False) -> None:
+    from gcp_storage import update_regdata_password, verify_regdata_identity
+
+    container = st.sidebar if sidebar else st
+    with container.expander("Forgot password?"):
+        container.caption("Enter your User ID and full name exactly as stored in RegData.")
+        with container.form("forgot_password_form"):
+            user_id = st.text_input("User ID")
+            full_name = st.text_input("Full name")
+            new_password = st.text_input("New password", type="password")
+            confirm_password = st.text_input("Confirm new password", type="password")
+            submitted = st.form_submit_button("Reset password")
+
+        if submitted:
+            user_id = str(user_id or "").strip()
+            full_name = str(full_name or "").strip()
+            if not user_id or not full_name:
+                container.error("User ID and full name are required.")
+            elif new_password != confirm_password:
+                container.error("New passwords do not match.")
+            elif not verify_regdata_identity(user_id, full_name):
+                container.error("User ID and name do not match our records.")
+            else:
+                ok, message = update_regdata_password(user_id, new_password)
+                if ok:
+                    container.success(message)
+                else:
+                    container.error(message)
+
+
+def _render_change_password_panel(auth: Dict[str, Any], *, sidebar: bool = True) -> None:
+    from gcp_storage import authenticate_regdata_user, update_regdata_password
+
+    container = st.sidebar if sidebar else st
+    with container.expander("Change password"):
+        with container.form("change_password_form"):
+            current_password = st.text_input("Current password", type="password")
+            new_password = st.text_input("New password", type="password")
+            confirm_password = st.text_input("Confirm new password", type="password")
+            submitted = st.form_submit_button("Update password")
+
+        if submitted:
+            user_id = str(auth.get("user_id", "")).strip()
+            if new_password != confirm_password:
+                container.error("New passwords do not match.")
+            else:
+                check = authenticate_regdata_user(user_id, current_password)
+                if not check.get("ok"):
+                    container.error("Current password is incorrect.")
+                else:
+                    ok, message = update_regdata_password(user_id, new_password)
+                    if ok:
+                        container.success(message)
+                    else:
+                        container.error(message)
+
+
+def render_sidebar_account(auth: Dict[str, Any]) -> None:
+    """Account actions: change password and logout."""
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Account")
+    st.sidebar.caption(f"**{auth.get('name', 'User')}** · Rank {auth.get('rank', 1)}")
+    _render_change_password_panel(auth, sidebar=True)
+    if st.sidebar.button("Logout", use_container_width=True, key="sidebar_logout_btn"):
+        _clear_auth_state()
+        st.rerun()
+
+
 def _render_login_form(min_level_rank: int) -> None:
     logo = logo_display_path()
     if logo:
@@ -136,28 +231,18 @@ def _render_login_form(min_level_rank: int) -> None:
     st.warning("Login required to access this page.")
     with st.form("login_form"):
         user_id = st.text_input("User ID")
+        password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login")
     if submitted:
-        user_id = str(user_id or "").strip()
-        if not user_id:
+        if not str(user_id or "").strip():
             st.error("User ID is required")
             return
-        user_info = lookup_user_in_regdata(user_id)
-        if not user_info.get("ok", False):
-            st.error("Unable to verify user")
+        if not str(password or "").strip():
+            st.error("Password is required")
             return
-        user_rank = int(user_info.get("level_rank", 1) or 1)
-        if user_rank < min_level_rank:
-            st.error(f"Access denied. This page requires rank {min_level_rank} or above.")
-            return
-        st.session_state["is_logged_in"] = True
-        st.session_state["auth_user"] = {
-            "user_id": user_info.get("user_id", user_id),
-            "name": user_info.get("display_name", user_id.title()),
-            "rank": user_rank,
-        }
-        st.success("Login successful")
-        st.rerun()
+        _attempt_login(user_id, password, min_level_rank)
+
+    _render_forgot_password_panel(sidebar=False)
 
 
 def require_login(min_level_rank: int = 1) -> Dict[str, Any]:
@@ -201,38 +286,35 @@ def render_home_auth_controls() -> Optional[Dict[str, Any]]:
     st.sidebar.markdown("### Account")
 
     if auth:
-        st.sidebar.success(f"Logged in: {auth.get('name', 'User')}")
-        st.sidebar.caption(f"Rank: {auth.get('rank', 1)}")
         rank = int(auth.get("rank", 1) or 1)
         if rank >= 2:
             st.sidebar.page_link("pages/3_JobEntry.py", label="Job Entry")
         if rank >= 3:
             st.sidebar.page_link("pages/2_MasterUser.py", label="Master User")
-        if st.sidebar.button("Logout"):
-            _clear_auth_state()
-            st.rerun()
+        render_sidebar_account(auth)
         return auth
 
     with st.sidebar.form("home_login_form"):
         user_id = st.text_input("User ID", key="home_login_user_id")
+        password = st.text_input("Password", type="password", key="home_login_password")
         submitted = st.form_submit_button("Login for edit pages")
     if submitted:
-        user_id = str(user_id or "").strip()
-        if not user_id:
+        if not str(user_id or "").strip():
             st.sidebar.error("User ID is required")
+        elif not str(password or "").strip():
+            st.sidebar.error("Password is required")
         else:
-            user_info = lookup_user_in_regdata(user_id)
+            from gcp_storage import authenticate_regdata_user
+
+            user_info = authenticate_regdata_user(user_id, password)
             if not user_info.get("ok", False):
-                st.sidebar.error("Unable to verify user")
+                st.sidebar.error(user_info.get("error", "Invalid User ID or password."))
             else:
-                st.session_state["is_logged_in"] = True
-                st.session_state["auth_user"] = {
-                    "user_id": user_info.get("user_id", user_id),
-                    "name": user_info.get("display_name", user_id.title()),
-                    "rank": int(user_info.get("level_rank", 1) or 1),
-                }
+                _set_auth_session(user_info)
                 st.sidebar.success("Login successful")
                 st.rerun()
+
+    _render_forgot_password_panel(sidebar=True)
     st.sidebar.info("Home is available without login. Login to access additional pages.")
     return None
 
@@ -266,7 +348,7 @@ def render_role_navigation(auth: Dict[str, Any]) -> None:
     if rank >= 3:
         st.sidebar.page_link("pages/2_MasterUser.py", label="Master User")
 
-
+    render_sidebar_account(auth)
 # ======================================
 # ERROR HANDLING
 # ======================================

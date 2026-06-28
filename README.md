@@ -94,10 +94,14 @@ client_x509_cert_url = "..."
 
 ## Authentication
 
-Users log in with a **User ID** looked up from `regdata.db` on GCS.
+Users log in with **User ID** and **Password** from `RegData` in `databases_regdata.db` on GCS.
 
 | Level in RegData | Access |
 |------------------|--------|
 | MasterUser | Home + Job Entry + Master User |
 | User | Home + Job Entry |
 | Other | Home only |
+
+**Password help (sidebar / login page):**
+- **Change password** — when logged in, open *Change password* under Account
+- **Forgot password** — use *Forgot password?* and enter User ID + full name from RegData

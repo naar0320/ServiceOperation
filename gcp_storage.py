@@ -275,6 +275,167 @@ def generate_job_id(job_type: str = "Maintenance") -> str:
 # ======================================
 # RegData & Technician List
 # ======================================
+def _regdata_column_map(conn: sqlite3.Connection) -> dict[str, str]:
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info('RegData')")
+    return {str(r[1]).strip().lower(): str(r[1]).strip() for r in cur.fetchall()}
+
+
+def _pick_regdata_column(columns: dict[str, str], candidates: tuple[str, ...]) -> str | None:
+    for candidate in candidates:
+        if candidate.lower() in columns:
+            return columns[candidate.lower()]
+    return None
+
+
+def _user_info_from_regdata_row(row: sqlite3.Row, columns: dict[str, str]) -> dict:
+    row_dict = {str(k).lower(): row[k] for k in row.keys()}
+    display_name = (
+        row_dict.get("name")
+        or row_dict.get("display_name")
+        or row_dict.get("fullname")
+        or row_dict.get("userid")
+        or row_dict.get("user_id")
+        or "User"
+    )
+    role_raw = str(
+        row_dict.get("classification")
+        or row_dict.get("level")
+        or row_dict.get("userlevel")
+        or row_dict.get("role")
+        or ""
+    ).strip().lower()
+
+    if role_raw in ("masteruser", "master user", "admin", "administrator", "manager"):
+        level_rank = 3
+    elif role_raw in ("user level", "userlevel", "user", "technician", "operator"):
+        level_rank = 2
+    else:
+        level_rank = 1
+
+    user_id = str(row_dict.get("userid") or row_dict.get("user_id") or "").strip()
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "display_name": str(display_name).strip() or user_id,
+        "level_rank": level_rank,
+    }
+
+
+def _fetch_regdata_user(conn: sqlite3.Connection, user_id: str) -> tuple[sqlite3.Row | None, dict[str, str]]:
+    columns = _regdata_column_map(conn)
+    user_col = _pick_regdata_column(columns, ("userid", "user_id", "user id"))
+    if not user_col:
+        return None, columns
+    cur = conn.cursor()
+    cur.execute(f'SELECT * FROM RegData WHERE [{user_col}] = ? LIMIT 1', (user_id.strip(),))
+    return cur.fetchone(), columns
+
+
+def authenticate_regdata_user(user_id: str, password: str) -> dict:
+    """Verify User ID and password against RegData on GCS."""
+    user_id = str(user_id or "").strip()
+    password = str(password or "").strip()
+    if not user_id or not password:
+        return {"ok": False, "error": "User ID and password are required."}
+
+    try:
+        conn = _open_remote_db(REMOTE_REGDATA_PATH)
+        if conn is None:
+            return {"ok": False, "error": "Unable to load user database from cloud."}
+        conn.row_factory = sqlite3.Row
+
+        row, columns = _fetch_regdata_user(conn, user_id)
+        if row is None:
+            conn.close()
+            return {"ok": False, "error": "Invalid User ID or password."}
+
+        pwd_col = _pick_regdata_column(columns, ("password", "passwd", "pwd"))
+        if not pwd_col:
+            conn.close()
+            return {"ok": False, "error": "Password field not found in RegData."}
+
+        row_dict = {str(k).lower(): row[k] for k in row.keys()}
+        stored_password = str(row_dict.get(pwd_col.lower(), "") or "").strip()
+        conn.close()
+
+        if stored_password != password:
+            return {"ok": False, "error": "Invalid User ID or password."}
+
+        return _user_info_from_regdata_row(row, columns)
+    except Exception as exc:
+        return {"ok": False, "error": f"Login failed: {exc}"}
+
+
+def verify_regdata_identity(user_id: str, full_name: str) -> bool:
+    """Confirm User ID and full name match RegData (for password reset)."""
+    try:
+        conn = _open_remote_db(REMOTE_REGDATA_PATH)
+        if conn is None:
+            return False
+        conn.row_factory = sqlite3.Row
+        row, columns = _fetch_regdata_user(conn, user_id)
+        if row is None:
+            conn.close()
+            return False
+        row_dict = {str(k).lower(): row[k] for k in row.keys()}
+        conn.close()
+        expected = str(
+            row_dict.get("name")
+            or row_dict.get("display_name")
+            or row_dict.get("fullname")
+            or ""
+        ).strip().lower()
+        return expected == str(full_name or "").strip().lower()
+    except Exception:
+        return False
+
+
+def update_regdata_password(user_id: str, new_password: str) -> tuple[bool, str]:
+    """Update a user's password in RegData on GCS."""
+    user_id = str(user_id or "").strip()
+    new_password = str(new_password or "").strip()
+    if not user_id or not new_password:
+        return False, "User ID and new password are required."
+    if len(new_password) < 6:
+        return False, "Password must be at least 6 characters."
+
+    try:
+        db_bytes = _download_db_bytes(REMOTE_REGDATA_PATH)
+        if db_bytes is None:
+            return False, "RegData database not found on cloud."
+
+        temp_path = _temp_db_path("regdata_password_update.db")
+        temp_path.write_bytes(db_bytes)
+        conn = sqlite3.connect(str(temp_path))
+        columns = _regdata_column_map(conn)
+        user_col = _pick_regdata_column(columns, ("userid", "user_id", "user id"))
+        pwd_col = _pick_regdata_column(columns, ("password", "passwd", "pwd"))
+        if not user_col or not pwd_col:
+            conn.close()
+            return False, "RegData user/password columns not found."
+
+        cur = conn.cursor()
+        cur.execute(
+            f'UPDATE RegData SET [{pwd_col}] = ? WHERE [{user_col}] = ?',
+            (new_password, user_id),
+        )
+        if cur.rowcount == 0:
+            conn.close()
+            return False, "User ID not found."
+
+        conn.commit()
+        conn.close()
+        _upload_db_file(temp_path, REMOTE_REGDATA_PATH)
+        temp_path.unlink(missing_ok=True)
+
+        local_regdata = PROJECT_ROOT / "data" / "regdata.db"
+        sync_regdata_from_gcs(local_regdata)
+        return True, "Password updated successfully."
+    except Exception as exc:
+        return False, f"Could not update password: {exc}"
+
+
 def sync_regdata_from_gcs(local_path: Path) -> bool:
     try:
         db_bytes = _download_db_bytes(REMOTE_REGDATA_PATH)
