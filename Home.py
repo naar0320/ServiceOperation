@@ -10,7 +10,7 @@ render_home_auth_controls()
 
 render_page_header("Maintenance Dashboard", "Task reports overview")
 
-DISPLAY_COLUMNS = ["Job ID", "Job Type", "Job Status", "Severity", "Priority", "Location", "Create at", "Assign by"]
+DISPLAY_COLUMNS = ["Job ID", "Job Type", "Job Status", "Severity", "Priority", "Location", "Create at", "Attend by"]
 STATUS_PENDING = "Pending"
 STATUS_IN_PROGRESS = "In Progress"
 STATUS_COMPLETED = "Completed"

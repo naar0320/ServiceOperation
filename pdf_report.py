@@ -34,7 +34,7 @@ DETAIL_COLUMNS = [
     "Create By",
     "Create at",
     "Date",
-    "Assign by",
+    "Attend by",
     "Time Start",
     "Time End",
     "Task Description",

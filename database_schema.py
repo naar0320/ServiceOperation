@@ -18,7 +18,7 @@ TASK_REPORT_COLUMNS = [
     "Priority",
     "Location",
     "Job Status",
-    "Assign by",
+    "Attend by",
     "Time Start",
     "Time End",
     "Task Description",
@@ -55,6 +55,7 @@ IMAGE_RULES = {
 REMOVED_COLUMNS = [
     "Shift", "Machine ID", "Machine/Equipment",
     "Date Start", "Date End", "Maintenance Frequency",
+    "Assign by",
 ]
 
 REQUIRED_FIELDS = [
@@ -64,7 +65,7 @@ REQUIRED_FIELDS = [
     "Priority",
     "Location",
     "Job Status",
-    "Assign by",
+    "Attend by",
     "Time Start",
     "Task Description",
 ]
@@ -80,7 +81,7 @@ CREATE TABLE IF NOT EXISTS [{TASK_REPORTS_TABLE}] (
     [Priority] TEXT,
     [Location] TEXT,
     [Job Status] TEXT,
-    [Assign by] TEXT,
+    [Attend by] TEXT,
     [Time Start] TEXT,
     [Time End] TEXT,
     [Task Description] TEXT,

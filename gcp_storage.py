@@ -96,14 +96,12 @@ def _open_remote_db(remote_path: str) -> sqlite3.Connection | None:
 # Task Reports Database
 # ======================================
 def _has_legacy_columns(conn: sqlite3.Connection) -> bool:
-    cur = conn.cursor()
-    cur.execute(f'PRAGMA table_info([{TASK_REPORTS_TABLE}])')
-    cols = {r[1] for r in cur.fetchall()}
+    cols = _table_columns(conn)
     return any(c in cols for c in REMOVED_COLUMNS)
 
 
 def _migrate_sqlite_file(db_path: Path) -> None:
-    """Rewrite SQLite file in-place to drop legacy columns."""
+    """Rewrite SQLite file in-place to drop legacy columns and rename fields."""
     conn = sqlite3.connect(str(db_path))
     if not _has_legacy_columns(conn):
         conn.close()
@@ -112,7 +110,12 @@ def _migrate_sqlite_file(db_path: Path) -> None:
     old_cols = _table_columns(conn)
     select_parts = []
     for col in TASK_REPORT_COLUMNS:
-        select_parts.append(f"[{col}]" if col in old_cols else f"'' AS [{col}]")
+        if col in old_cols:
+            select_parts.append(f"[{col}]")
+        elif col == "Attend by" and "Assign by" in old_cols:
+            select_parts.append("[Assign by] AS [Attend by]")
+        else:
+            select_parts.append(f"'' AS [{col}]")
 
     create_parts = [f"[{col}] TEXT" for col in TASK_REPORT_COLUMNS]
     create_parts[TASK_REPORT_COLUMNS.index("Job ID")] = "[Job ID] TEXT PRIMARY KEY"
@@ -173,6 +176,13 @@ def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Drop legacy columns and align to current schema."""
     if df.empty:
         return df
+    if "Assign by" in df.columns:
+        if "Attend by" not in df.columns:
+            df = df.rename(columns={"Assign by": "Attend by"})
+        else:
+            empty = df["Attend by"].astype(str).str.strip() == ""
+            df.loc[empty, "Attend by"] = df.loc[empty, "Assign by"]
+        df = df.drop(columns=["Assign by"], errors="ignore")
     df = df.drop(columns=[c for c in REMOVED_COLUMNS if c in df.columns], errors="ignore")
     extra = [c for c in df.columns if c not in TASK_REPORT_COLUMNS]
     if extra:
@@ -295,13 +305,26 @@ def get_technician_list() -> list[str]:
 
 
 def get_user_list() -> list[str]:
-    """Load user names from RegData for 'Assign by' field."""
+    """Load user names from RegData for the Attend by field."""
     try:
         conn = _open_remote_db(REMOTE_REGDATA_PATH)
         if conn is None:
             return []
         try:
-            df = pd.read_sql_query("SELECT name FROM RegData ORDER BY name", conn)
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info('RegData')")
+            cols = [str(r[1]).strip() for r in (cur.fetchall() or [])]
+            cols_lower = {c.lower(): c for c in cols}
+
+            name_col = None
+            for candidate in ("name", "display_name", "fullname", "user_name"):
+                if candidate in cols_lower:
+                    name_col = cols_lower[candidate]
+                    break
+            if not name_col:
+                return []
+
+            df = pd.read_sql_query(f'SELECT DISTINCT [{name_col}] AS name FROM RegData ORDER BY name', conn)
             return [str(n).strip() for n in df["name"].dropna() if str(n).strip()]
         except Exception:
             return []
