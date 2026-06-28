@@ -37,28 +37,38 @@ def get_logo_path() -> Optional[Path]:
     return None
 
 
+def logo_display_path() -> Optional[str]:
+    """Path safe for Streamlit image/page_icon (relative, forward slashes)."""
+    logo = get_logo_path()
+    if not logo:
+        return None
+    try:
+        return str(logo.relative_to(APP_ROOT)).replace("\\", "/")
+    except ValueError:
+        return str(logo).replace("\\", "/")
+
+
 def get_page_icon():
     """Streamlit page icon — logo image or emoji fallback."""
-    logo = get_logo_path()
-    return str(logo) if logo else "🛠️"
+    return logo_display_path() or "🛠️"
 
 
 def render_sidebar_branding() -> None:
     """Show company logo at the top of the sidebar."""
-    logo = get_logo_path()
+    logo = logo_display_path()
     if logo:
-        st.sidebar.image(str(logo), use_container_width=True)
+        st.sidebar.image(logo, use_container_width=True)
         st.sidebar.caption("Ammar Builder Enterprise")
         st.sidebar.markdown("---")
 
 
 def render_page_header(title: str, subtitle: str = "") -> None:
     """Page header with logo aligned left and title on the right."""
-    logo = get_logo_path()
+    logo = logo_display_path()
     if logo:
         col_logo, col_title = st.columns([1, 4], vertical_alignment="center")
         with col_logo:
-            st.image(str(logo), use_container_width=True)
+            st.image(logo, use_container_width=True)
         with col_title:
             st.title(title)
             if subtitle:
@@ -120,9 +130,9 @@ def _clear_auth_state() -> None:
 
 
 def _render_login_form(min_level_rank: int) -> None:
-    logo = get_logo_path()
+    logo = logo_display_path()
     if logo:
-        st.image(str(logo), width=240)
+        st.image(logo, width=240)
     st.warning("Login required to access this page.")
     with st.form("login_form"):
         user_id = st.text_input("User ID")
