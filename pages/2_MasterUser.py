@@ -1,5 +1,5 @@
 import zipfile
-from datetime import date, timedelta
+from datetime import timedelta
 from io import BytesIO
 
 import pandas as pd
@@ -16,15 +16,24 @@ from gcp_storage import (
     list_images_for_job,
     parse_image_paths,
 )
-from utils import format_ts_sg, hide_default_sidebar_navigation, require_login, render_role_navigation, today_sg
+from pdf_report import build_job_report_pdf, image_caption_from_path
+from utils import (
+    format_ts_sg,
+    get_page_icon,
+    hide_default_sidebar_navigation,
+    render_page_header,
+    render_role_navigation,
+    require_login,
+    today_sg,
+)
 
-st.set_page_config(page_title="Review Reports", page_icon="📋", layout="wide")
+st.set_page_config(page_title="Review Reports", page_icon=get_page_icon(), layout="wide")
 hide_default_sidebar_navigation()
 
 auth = require_login(min_level_rank=3)
 render_role_navigation(auth)
 
-st.title("📋 Review & Download Reports")
+render_page_header("Review & Download Reports", "Filter reports and export PDF / CSV")
 
 LIST_COLUMNS = [
     "Job ID", "Create at", "Job Status", "Priority", "Job Type",
@@ -142,56 +151,18 @@ def _job_images(job_id: str, job: dict) -> list[str]:
 
 def _generate_pdf(job_data: dict, image_paths: list, include_images: bool = True) -> BytesIO | None:
     try:
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-        from reportlab.lib.units import inch
-        from reportlab.platypus import Image as RLImage
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=0.5 * inch, rightMargin=0.5 * inch)
-        styles = getSampleStyleSheet()
-        elements = []
-
-        job_id = str(job_data.get("Job ID", "report"))
-        title = ParagraphStyle("title", parent=styles["Heading1"], fontSize=18, alignment=1, spaceAfter=10)
-        elements.append(Paragraph("Job Report — Ammar Builders Maintenance", title))
-        elements.append(Paragraph(f"<b>Job ID:</b> {job_id}", styles["Normal"]))
-        elements.append(Spacer(1, 0.15 * inch))
-
-        rows = []
-        for col in DETAIL_COLUMNS:
-            if col in job_data and job_data[col] not in (None, ""):
-                rows.append([col, str(job_data[col])[:500]])
-        for k, v in job_data.items():
-            if k not in DETAIL_COLUMNS and not str(k).startswith("__") and v not in (None, ""):
-                rows.append([str(k), str(v)[:500]])
-
-        table = Table(rows, colWidths=[2 * inch, 4.2 * inch])
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f5f5f5")),
-            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ]))
-        elements.append(table)
-
-        if include_images and image_paths:
-            elements.append(Spacer(1, 0.25 * inch))
-            elements.append(Paragraph("Images", styles["Heading2"]))
-            for path in image_paths[:12]:
+        image_items = []
+        if include_images:
+            for path in image_paths:
                 img_bytes = download_image(path)
                 if img_bytes:
-                    elements.append(RLImage(BytesIO(img_bytes), width=3 * inch, height=2 * inch))
-                    elements.append(Spacer(1, 0.08 * inch))
-
-        elements.append(Spacer(1, 0.15 * inch))
-        elements.append(Paragraph(f"<font size=8>Generated {format_ts_sg()}</font>", styles["Normal"]))
-        doc.build(elements)
-        buffer.seek(0)
-        return buffer
+                    image_items.append((image_caption_from_path(path), img_bytes))
+        return build_job_report_pdf(
+            job_data,
+            image_items,
+            include_images=include_images,
+            generated_at=format_ts_sg(),
+        )
     except ImportError:
         st.error("reportlab not installed — add it to requirements.txt")
         return None

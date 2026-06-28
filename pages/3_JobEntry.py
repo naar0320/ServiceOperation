@@ -23,22 +23,22 @@ from gcp_storage import (
 )
 from utils import (
     format_ts_sg,
+    get_page_icon,
     hide_default_sidebar_navigation,
     now_sg,
+    render_page_header,
     render_role_navigation,
     require_login,
     today_sg,
 )
 
-st.set_page_config(page_title="Job Entry", page_icon="📝", layout="wide")
+st.set_page_config(page_title="Job Entry", page_icon=get_page_icon(), layout="wide")
 hide_default_sidebar_navigation()
 
 auth = require_login(min_level_rank=2)
 render_role_navigation(auth)
 
-st.title("📝 Job Task Entry Form")
-st.markdown("Create a new maintenance task report")
-st.markdown("---")
+render_page_header("Job Task Entry", "Create a new maintenance task report")
 
 
 def _current_user_name() -> str:
