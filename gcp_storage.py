@@ -386,6 +386,93 @@ def list_uploaded_data(prefix: str = "") -> list:
         return []
 
 
+def get_gcs_bucket_summary() -> dict:
+    """Return bucket metadata for the GCS database viewer."""
+    try:
+        bucket = get_bucket()
+        bucket.reload()
+        return {
+            "bucket": BUCKET_NAME,
+            "location": bucket.location or "—",
+            "storage_class": bucket.storage_class or "—",
+            "project": os.getenv("GCP_PROJECT_ID", "service-report-494512"),
+            "console_url": (
+                f"https://console.cloud.google.com/storage/browser/{BUCKET_NAME}"
+                f"?project=service-report-494512"
+            ),
+        }
+    except Exception as e:
+        return {"bucket": BUCKET_NAME, "error": str(e)}
+
+
+def list_gcs_database_files() -> list[dict]:
+    """List SQLite database files under databases/ in GCS."""
+    try:
+        bucket = get_bucket()
+        files = []
+        for blob in bucket.list_blobs(prefix="databases/"):
+            if blob.name.endswith("/") or not blob.name.endswith(".db"):
+                continue
+            files.append({
+                "File": blob.name,
+                "Size (KB)": round((blob.size or 0) / 1024, 2),
+                "Updated": str(blob.updated) if blob.updated else "",
+            })
+        return sorted(files, key=lambda x: x["File"])
+    except Exception as e:
+        st.error(f"Failed to list database files: {e}")
+        return []
+
+
+def inspect_gcs_sqlite(remote_path: str) -> dict:
+    """
+    Download a SQLite file from GCS and return table metadata + DataFrames.
+    Returns: {table_name: {"columns": [...], "row_count": int, "dataframe": df}}
+    """
+    try:
+        db_bytes = _download_db_bytes(remote_path)
+        if db_bytes is None:
+            return {}
+
+        temp_path = _temp_db_path(f"inspect_{remote_path.replace('/', '_')}")
+        temp_path.write_bytes(db_bytes)
+        conn = sqlite3.connect(str(temp_path))
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        tables = [r[0] for r in cur.fetchall()]
+
+        result = {}
+        for table in tables:
+            cur.execute(f'PRAGMA table_info("{table}")')
+            columns = [
+                {"Column": r[1], "Type": r[2], "Primary Key": "Yes" if r[5] else ""}
+                for r in cur.fetchall()
+            ]
+            df = pd.read_sql_query(f'SELECT * FROM "{table}"', conn)
+            result[table] = {
+                "columns": columns,
+                "row_count": len(df),
+                "dataframe": df,
+            }
+        conn.close()
+        temp_path.unlink(missing_ok=True)
+        return result
+    except Exception as e:
+        st.error(f"Failed to inspect {remote_path}: {e}")
+        return {}
+
+
+def count_gcs_images() -> int:
+    try:
+        bucket = get_bucket()
+        return sum(
+            1 for b in bucket.list_blobs(prefix=f"{REMOTE_IMAGES_PREFIX}/")
+            if not b.name.endswith("/")
+        )
+    except Exception:
+        return 0
+
+
 def migrate_gcs_database() -> bool:
     """Rewrite GCS database using current schema (drops removed columns)."""
     try:
