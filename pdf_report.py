@@ -14,7 +14,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Image as RLImage
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 APP_ROOT = Path(__file__).resolve().parent
 LOGO_CANDIDATES = (
@@ -51,16 +51,20 @@ LABEL_WIDTH = 1.8 * inch
 VALUE_WIDTH = CONTENT_WIDTH - LABEL_WIDTH
 
 GRID_COLS = 2
+IMAGES_PER_PAGE = 8  # 2 columns × up to 4 rows per page
 REPORT_TOP_MARGIN = 0.6 * inch
 REPORT_BOTTOM_MARGIN = 0.55 * inch
-REPORT_HEADER_RESERVE = 1.05 * inch
-IMAGE_SECTION_TITLE_H = 0.32 * inch
-IMAGE_GROUP_HEADER_H = 0.26 * inch
-IMAGE_GROUP_GAP = 0.08 * inch
 IMAGE_CAPTION_H = 0.22 * inch
 IMAGE_CELL_EXTRA = 14
 IMAGE_H_MAX = 2.35 * inch
 IMAGE_H_MIN = 0.48 * inch
+
+IMAGE_PAGE_LABELS = {
+    "Before": "Before Images",
+    "After": "After Images",
+    "Inspection": "Inspection Images",
+    "Photos": "Photos",
+}
 
 CELL_PAD = 6
 GRID_BORDER = colors.HexColor("#c8c8c8")
@@ -157,60 +161,25 @@ def _grid_rows(image_count: int) -> int:
     return (image_count + GRID_COLS - 1) // GRID_COLS
 
 
-def _estimate_details_height(job_data: dict) -> float:
-    """Estimate details-table height so image cells can scale to one page."""
-    header_h = 0.22 * inch
-    row_h = 0.17 * inch
-    wrap_fields = {"Task Description", "Action", "Remark", "Spare Parts Used"}
-    chars_per_line = 70
-    line_h = 0.125 * inch
-
-    total = header_h
-    for col in DETAIL_COLUMNS:
-        if col in job_data and job_data[col] not in (None, ""):
-            val = str(job_data[col])
-            if col in wrap_fields:
-                line_count = max(1, len(val) // chars_per_line + 1 + val.count("\n"))
-                total += line_count * line_h + 0.04 * inch
-            else:
-                total += row_h
-
-    for key, value in job_data.items():
-        if key in DETAIL_COLUMNS or str(key).startswith("__") or value in (None, ""):
-            continue
-        total += row_h
-
-    return total + 0.1 * inch
+def _chunk_image_items(
+    items: list[tuple[str, bytes]],
+    chunk_size: int = IMAGES_PER_PAGE,
+) -> list[list[tuple[str, bytes]]]:
+    if not items:
+        return []
+    return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
 
-def _compute_image_height(job_data: dict, groups: list[tuple[str, list]]) -> float:
-    """
-    Scale image cell height from total row count so grids fit on one PDF page.
-    Uses leftover space below details when enough room; otherwise a full page.
-    """
+def _compute_image_height_for_section(item_count: int) -> float:
+    """Scale image cells to fill one dedicated page for this section."""
     page_usable = PAGE_HEIGHT - REPORT_TOP_MARGIN - REPORT_BOTTOM_MARGIN
-    details_h = _estimate_details_height(job_data)
-    after_details = (
-        page_usable
-        - REPORT_HEADER_RESERVE
-        - details_h
-        - 0.14 * inch
-        - IMAGE_SECTION_TITLE_H
-    )
-
-    n_groups = len(groups)
-    total_rows = sum(_grid_rows(len(items)) for _, items in groups)
+    total_rows = _grid_rows(item_count)
     if total_rows == 0:
         return IMAGE_H_MAX
 
-    group_overhead = n_groups * (IMAGE_GROUP_HEADER_H + IMAGE_GROUP_GAP)
+    page_header_h = 0.55 * inch
+    available = page_usable - page_header_h - 0.12 * inch
     row_overhead = IMAGE_CAPTION_H + IMAGE_CELL_EXTRA
-
-    if after_details >= 2.2 * inch:
-        available = after_details - group_overhead
-    else:
-        available = page_usable - IMAGE_SECTION_TITLE_H - group_overhead - 0.22 * inch
-
     image_h = (available / total_rows) - row_overhead
     if image_h < IMAGE_H_MIN:
         image_h = max((available / total_rows) - row_overhead, 0.38 * inch)
@@ -332,33 +301,47 @@ def _image_grid_table(
 def _append_image_sections(
     elements: list,
     image_items: list[tuple[str, bytes]],
-    job_data: dict,
+    job_id: str,
     *,
     section_style: ParagraphStyle,
-    group_style: ParagraphStyle,
+    subtitle_style: ParagraphStyle,
     caption_style: ParagraphStyle,
 ) -> None:
+    """Render Before, After, etc. on separate pages; split when a section has >8 photos."""
     groups = _group_image_items(image_items)
     if not groups:
         return
 
-    image_h = _compute_image_height(job_data, groups)
-    elements.append(_full_width_wrapper(Paragraph("Images", section_style)))
-
     for group_name, items in groups:
-        rows = _grid_rows(len(items))
-        group_block = [
-            _full_width_wrapper(
-                Paragraph(
-                    f"{group_name} "
-                    f"<font size=8 color='#666666'>(2 columns · {rows} row{'s' if rows != 1 else ''})</font>",
-                    group_style,
+        chunks = _chunk_image_items(items)
+        section_label = IMAGE_PAGE_LABELS.get(group_name, group_name)
+        multi_page = len(chunks) > 1
+
+        for page_idx, chunk in enumerate(chunks, start=1):
+            elements.append(PageBreak())
+
+            image_h = _compute_image_height_for_section(len(chunk))
+            rows = _grid_rows(len(chunk))
+            title = section_label
+            if multi_page:
+                title = f"{section_label} — page {page_idx} of {len(chunks)}"
+
+            page_block = [
+                _full_width_wrapper(Paragraph(title, section_style)),
+                _full_width_wrapper(
+                    Paragraph(
+                        f"<b>Job ID:</b> {escape(job_id)} · "
+                        f"<font size=8 color='#666666'>"
+                        f"2 columns · {rows} row{'s' if rows != 1 else ''} · "
+                        f"{len(chunk)} photo{'s' if len(chunk) != 1 else ''} on this page"
+                        f"</font>",
+                        subtitle_style,
+                    ),
                 ),
-            ),
-            _image_grid_table(items, image_h=image_h, caption_style=caption_style),
-            Spacer(1, IMAGE_GROUP_GAP),
-        ]
-        elements.append(KeepTogether(group_block))
+                Spacer(1, 0.1 * inch),
+                _image_grid_table(chunk, image_h=image_h, caption_style=caption_style),
+            ]
+            elements.append(KeepTogether(page_block))
 
 
 def _load_logo_bytes() -> bytes | None:
@@ -527,13 +510,6 @@ def build_job_report_pdf(
         spaceBefore=0,
         spaceAfter=0,
     )
-    group_style = ParagraphStyle(
-        "ImageGroup",
-        parent=styles["Heading3"],
-        fontSize=10,
-        spaceBefore=2,
-        spaceAfter=4,
-    )
     footer_style = ParagraphStyle(
         "Footer",
         parent=styles["Normal"],
@@ -548,13 +524,12 @@ def build_job_report_pdf(
     ]
 
     if include_images and image_items:
-        elements.append(Spacer(1, 0.14 * inch))
         _append_image_sections(
             elements,
             image_items[:16],
-            job_data,
+            job_id,
             section_style=section_style,
-            group_style=group_style,
+            subtitle_style=subtitle_style,
             caption_style=caption_style,
         )
 
