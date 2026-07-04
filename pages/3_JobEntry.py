@@ -186,6 +186,55 @@ if st.session_state.get("job_ticket_record"):
     st.stop()
 
 
+def _read_upload_bytes(uploaded_file) -> bytes:
+    uploaded_file.seek(0)
+    data = uploaded_file.getvalue()
+    if not data:
+        data = uploaded_file.read()
+    return data or b""
+
+
+def _render_upload_previews(
+    files: list | None,
+    *,
+    list_key: str | None = None,
+    title: str = "Uploaded photos",
+    columns: int = 4,
+) -> None:
+    """Show thumbnail grid for selected/uploaded files. Mobile lists can remove items."""
+    if not files:
+        return
+
+    count = len(files)
+    st.markdown(f"**{title}** ({count})")
+    per_row = max(1, min(columns, 4))
+    for row_start in range(0, count, per_row):
+        row_files = files[row_start : row_start + per_row]
+        cols = st.columns(len(row_files))
+        for col_idx, uploaded in enumerate(row_files):
+            global_idx = row_start + col_idx
+            with cols[col_idx]:
+                img_bytes = _read_upload_bytes(uploaded)
+                if img_bytes:
+                    st.image(
+                        img_bytes,
+                        caption=uploaded.name,
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption(uploaded.name)
+                if list_key is not None:
+                    if st.button(
+                        "Remove",
+                        key=f"remove_{list_key}_{global_idx}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[list_key] = [
+                            f for i, f in enumerate(st.session_state[list_key]) if i != global_idx
+                        ]
+                        st.rerun()
+
+
 def _accumulate_single_upload(list_key: str, uploader_key: str, label: str) -> list:
     """Mobile-friendly: add one photo at a time to a session list."""
     if list_key not in st.session_state:
@@ -206,19 +255,19 @@ def _accumulate_single_upload(list_key: str, uploader_key: str, label: str) -> l
             st.rerun()
 
     count = len(st.session_state[list_key])
-    st.caption(f"Added: {count}")
-    if count and st.button("Clear photos", key=f"clear_{list_key}"):
+    if count:
+        _render_upload_previews(
+            st.session_state[list_key],
+            list_key=list_key,
+            title="Added photos",
+            columns=3,
+        )
+    else:
+        st.caption("No photos added yet.")
+    if count and st.button("Clear all photos", key=f"clear_{list_key}"):
         st.session_state[list_key] = []
         st.rerun()
     return st.session_state[list_key]
-
-
-def _read_upload_bytes(uploaded_file) -> bytes:
-    uploaded_file.seek(0)
-    data = uploaded_file.getvalue()
-    if not data:
-        data = uploaded_file.read()
-    return data or b""
 
 
 def _upload_images(uploaded_files, job_id: str, image_type: str) -> tuple[list[str], list[str]]:
@@ -291,7 +340,10 @@ if job_type == "Inspection":
             accept_multiple_files=True,
             key="inspection_images",
         )
-        st.caption(f"Selected: {len(inspection_files) if inspection_files else 0}/{min_inspection}")
+        n = len(inspection_files) if inspection_files else 0
+        st.caption(f"Selected: {n}/{min_inspection}")
+        if inspection_files:
+            _render_upload_previews(inspection_files, title="Selected inspection photos")
 elif job_type in ("Maintenance", "Repair"):
     min_each = IMAGE_RULES[job_type]["min_before"]
     if mobile_mode:
@@ -309,7 +361,10 @@ elif job_type in ("Maintenance", "Repair"):
                 accept_multiple_files=True,
                 key="before_images",
             )
-            st.caption(f"Selected: {len(before_files) if before_files else 0}/{min_each}")
+            n_before = len(before_files) if before_files else 0
+            st.caption(f"Selected: {n_before}/{min_each}")
+            if before_files:
+                _render_upload_previews(before_files, title="Before photos", columns=2)
         with c2:
             st.caption(f"After — min {min_each} when Completed")
             after_files = st.file_uploader(
@@ -318,7 +373,10 @@ elif job_type in ("Maintenance", "Repair"):
                 accept_multiple_files=True,
                 key="after_images",
             )
-            st.caption(f"Selected: {len(after_files) if after_files else 0}/{min_each}")
+            n_after = len(after_files) if after_files else 0
+            st.caption(f"Selected: {n_after}/{min_each}")
+            if after_files:
+                _render_upload_previews(after_files, title="After photos", columns=2)
 else:
     st.caption("Select a Job Type above to show image upload fields.")
 
