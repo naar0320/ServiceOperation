@@ -50,6 +50,18 @@ CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN
 LABEL_WIDTH = 1.8 * inch
 VALUE_WIDTH = CONTENT_WIDTH - LABEL_WIDTH
 
+GRID_COLS = 2
+REPORT_TOP_MARGIN = 0.6 * inch
+REPORT_BOTTOM_MARGIN = 0.55 * inch
+REPORT_HEADER_RESERVE = 1.05 * inch
+IMAGE_SECTION_TITLE_H = 0.32 * inch
+IMAGE_GROUP_HEADER_H = 0.26 * inch
+IMAGE_GROUP_GAP = 0.08 * inch
+IMAGE_CAPTION_H = 0.22 * inch
+IMAGE_CELL_EXTRA = 14
+IMAGE_H_MAX = 2.35 * inch
+IMAGE_H_MIN = 0.48 * inch
+
 CELL_PAD = 6
 GRID_BORDER = colors.HexColor("#c8c8c8")
 GRID_INNER = colors.HexColor("#d8d8d8")
@@ -138,8 +150,72 @@ def _image_sort_key(caption: str) -> tuple[int, str]:
     return number, caption.lower()
 
 
-def _grid_columns(image_count: int) -> int:
-    return 4 if image_count > 4 else 2
+def _grid_rows(image_count: int) -> int:
+    """Rows needed for a 2-column grid."""
+    if image_count <= 0:
+        return 0
+    return (image_count + GRID_COLS - 1) // GRID_COLS
+
+
+def _estimate_details_height(job_data: dict) -> float:
+    """Estimate details-table height so image cells can scale to one page."""
+    header_h = 0.22 * inch
+    row_h = 0.17 * inch
+    wrap_fields = {"Task Description", "Action", "Remark", "Spare Parts Used"}
+    chars_per_line = 70
+    line_h = 0.125 * inch
+
+    total = header_h
+    for col in DETAIL_COLUMNS:
+        if col in job_data and job_data[col] not in (None, ""):
+            val = str(job_data[col])
+            if col in wrap_fields:
+                line_count = max(1, len(val) // chars_per_line + 1 + val.count("\n"))
+                total += line_count * line_h + 0.04 * inch
+            else:
+                total += row_h
+
+    for key, value in job_data.items():
+        if key in DETAIL_COLUMNS or str(key).startswith("__") or value in (None, ""):
+            continue
+        total += row_h
+
+    return total + 0.1 * inch
+
+
+def _compute_image_height(job_data: dict, groups: list[tuple[str, list]]) -> float:
+    """
+    Scale image cell height from total row count so grids fit on one PDF page.
+    Uses leftover space below details when enough room; otherwise a full page.
+    """
+    page_usable = PAGE_HEIGHT - REPORT_TOP_MARGIN - REPORT_BOTTOM_MARGIN
+    details_h = _estimate_details_height(job_data)
+    after_details = (
+        page_usable
+        - REPORT_HEADER_RESERVE
+        - details_h
+        - 0.14 * inch
+        - IMAGE_SECTION_TITLE_H
+    )
+
+    n_groups = len(groups)
+    total_rows = sum(_grid_rows(len(items)) for _, items in groups)
+    if total_rows == 0:
+        return IMAGE_H_MAX
+
+    group_overhead = n_groups * (IMAGE_GROUP_HEADER_H + IMAGE_GROUP_GAP)
+    row_overhead = IMAGE_CAPTION_H + IMAGE_CELL_EXTRA
+
+    if after_details >= 2.2 * inch:
+        available = after_details - group_overhead
+    else:
+        available = page_usable - IMAGE_SECTION_TITLE_H - group_overhead - 0.22 * inch
+
+    image_h = (available / total_rows) - row_overhead
+    if image_h < IMAGE_H_MIN:
+        image_h = max((available / total_rows) - row_overhead, 0.38 * inch)
+
+    return max(IMAGE_H_MIN, min(IMAGE_H_MAX, image_h))
 
 
 def _short_caption(caption: str) -> str:
@@ -211,12 +287,12 @@ def _image_grid_cell(
 def _image_grid_table(
     items: list[tuple[str, bytes]],
     *,
-    cols: int,
+    image_h: float,
     caption_style: ParagraphStyle,
 ) -> Table:
+    cols = GRID_COLS
     col_w = CONTENT_WIDTH / cols
-    caption_h = 0.24 * inch
-    image_h = 1.45 * inch if cols == 4 else 2.05 * inch
+    caption_h = IMAGE_CAPTION_H
     row_h = caption_h + image_h + CELL_PAD + 8
 
     grid_rows: list[list] = []
@@ -256,25 +332,31 @@ def _image_grid_table(
 def _append_image_sections(
     elements: list,
     image_items: list[tuple[str, bytes]],
+    job_data: dict,
     *,
     section_style: ParagraphStyle,
     group_style: ParagraphStyle,
     caption_style: ParagraphStyle,
 ) -> None:
+    groups = _group_image_items(image_items)
+    if not groups:
+        return
+
+    image_h = _compute_image_height(job_data, groups)
     elements.append(_full_width_wrapper(Paragraph("Images", section_style)))
 
-    for group_name, items in _group_image_items(image_items):
-        cols = _grid_columns(len(items))
-        layout = "4 × 2" if cols == 4 else "2 × 2"
+    for group_name, items in groups:
+        rows = _grid_rows(len(items))
         group_block = [
             _full_width_wrapper(
                 Paragraph(
-                    f"{group_name} <font size=8 color='#666666'>({layout} grid)</font>",
+                    f"{group_name} "
+                    f"<font size=8 color='#666666'>(2 columns · {rows} row{'s' if rows != 1 else ''})</font>",
                     group_style,
                 ),
             ),
-            _image_grid_table(items, cols=cols, caption_style=caption_style),
-            Spacer(1, 0.1 * inch),
+            _image_grid_table(items, image_h=image_h, caption_style=caption_style),
+            Spacer(1, IMAGE_GROUP_GAP),
         ]
         elements.append(KeepTogether(group_block))
 
@@ -470,6 +552,7 @@ def build_job_report_pdf(
         _append_image_sections(
             elements,
             image_items[:16],
+            job_data,
             section_style=section_style,
             group_style=group_style,
             caption_style=caption_style,
