@@ -1,3 +1,4 @@
+import hashlib
 import streamlit as st
 from datetime import datetime, time
 from pathlib import Path
@@ -69,10 +70,10 @@ def _stable_job_id(job_type: str) -> str:
     if not job_type:
         return ""
     key_type = job_type
-    if (
-        st.session_state.get("job_entry_type") != key_type
-        or "job_entry_id" not in st.session_state
-    ):
+    prev_type = st.session_state.get("job_entry_type")
+    if prev_type != key_type or "job_entry_id" not in st.session_state:
+        if prev_type is not None and prev_type != key_type:
+            _clear_image_stores("inspection_images", "before_images", "after_images")
         st.session_state.job_entry_type = key_type
         st.session_state.job_entry_id = generate_job_id(key_type)
     return st.session_state.job_entry_id
@@ -83,9 +84,15 @@ def _reset_job_id() -> None:
     st.session_state.pop("job_entry_type", None)
 
 
+def _clear_image_stores(*bases: str) -> None:
+    """Clear persisted image bytes and reset upload widgets for each list."""
+    for base in bases:
+        st.session_state.pop(_image_store_key(base), None)
+        st.session_state.pop(_uploader_slot_key(base), None)
+
+
 def _clear_image_lists(*keys: str) -> None:
-    for key in keys:
-        st.session_state.pop(f"{key}_list", None)
+    _clear_image_stores(*keys)
 
 
 _FORM_WIDGET_KEYS = (
@@ -186,6 +193,19 @@ if st.session_state.get("job_ticket_record"):
     st.stop()
 
 
+_IMAGE_TYPES = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"]
+_PREVIEW_THUMB_W = 108
+_PREVIEW_COLS = 6
+
+
+def _image_store_key(base: str) -> str:
+    return f"job_img_store_{base}"
+
+
+def _uploader_slot_key(base: str) -> str:
+    return f"job_img_slot_{base}"
+
+
 def _read_upload_bytes(uploaded_file) -> bytes:
     uploaded_file.seek(0)
     data = uploaded_file.getvalue()
@@ -194,102 +214,158 @@ def _read_upload_bytes(uploaded_file) -> bytes:
     return data or b""
 
 
+def _image_signature(name: str, data: bytes) -> str:
+    return hashlib.md5(data).hexdigest()
+
+
+def _get_image_store(base: str) -> list[dict]:
+    key = _image_store_key(base)
+    if key not in st.session_state:
+        st.session_state[key] = []
+    return st.session_state[key]
+
+
+def _add_stored_image(base: str, name: str, data: bytes) -> bool:
+    if not data:
+        return False
+    store = _get_image_store(base)
+    sig = _image_signature(name, data)
+    if any(item["sig"] == sig for item in store):
+        return False
+    store.append({"name": name, "bytes": data, "sig": sig})
+    return True
+
+
+def _image_name(item: dict) -> str:
+    return str(item.get("name") or "photo")
+
+
+def _image_bytes(item: dict) -> bytes:
+    return item.get("bytes") or b""
+
+
 def _render_upload_previews(
-    files: list | None,
+    base: str,
     *,
-    list_key: str | None = None,
     title: str = "Uploaded photos",
-    columns: int = 4,
+    min_required: int | None = None,
 ) -> None:
-    """Show thumbnail grid for selected/uploaded files. Mobile lists can remove items."""
-    if not files:
+    """Small thumbnails — enough to verify photos without full-size display."""
+    store = _get_image_store(base)
+    count = len(store)
+    if count == 0:
+        st.caption("No photos added yet.")
         return
 
-    count = len(files)
-    st.markdown(f"**{title}** ({count})")
-    per_row = max(1, min(columns, 4))
+    if min_required is not None:
+        st.caption(f"**{count} / {min_required}** photo{'s' if min_required != 1 else ''} added")
+
+    st.markdown(f"**{title}** — tap **Remove** to delete a photo")
+    per_row = _PREVIEW_COLS
     for row_start in range(0, count, per_row):
-        row_files = files[row_start : row_start + per_row]
-        cols = st.columns(len(row_files))
-        for col_idx, uploaded in enumerate(row_files):
+        row_items = store[row_start : row_start + per_row]
+        cols = st.columns(len(row_items))
+        for col_idx, item in enumerate(row_items):
             global_idx = row_start + col_idx
             with cols[col_idx]:
-                img_bytes = _read_upload_bytes(uploaded)
+                img_bytes = _image_bytes(item)
                 if img_bytes:
                     st.image(
                         img_bytes,
-                        caption=uploaded.name,
-                        use_container_width=True,
+                        width=_PREVIEW_THUMB_W,
+                        caption=f"#{global_idx + 1}",
                     )
                 else:
-                    st.caption(uploaded.name)
-                if list_key is not None:
-                    if st.button(
-                        "Remove",
-                        key=f"remove_{list_key}_{global_idx}",
-                        use_container_width=True,
-                    ):
-                        st.session_state[list_key] = [
-                            f for i, f in enumerate(st.session_state[list_key]) if i != global_idx
-                        ]
-                        st.rerun()
+                    st.caption(f"#{global_idx + 1}")
+                st.caption(_image_name(item)[:18])
+                if st.button(
+                    "Remove",
+                    key=f"rm_{base}_{item['sig'][:10]}_{global_idx}",
+                    use_container_width=True,
+                ):
+                    st.session_state[_image_store_key(base)] = [
+                        x for i, x in enumerate(store) if i != global_idx
+                    ]
+                    st.rerun()
 
 
-def _accumulate_single_upload(list_key: str, uploader_key: str, label: str) -> list:
-    """Mobile-friendly: add one photo at a time to a session list."""
-    if list_key not in st.session_state:
-        st.session_state[list_key] = []
+def _image_uploader_section(
+    base: str,
+    label: str,
+    *,
+    multi: bool,
+    title: str,
+    min_required: int | None = None,
+) -> list[dict]:
+    """
+    Copy uploads into session state immediately so photos survive page reruns.
+    Resets the file picker after each successful add (desktop + mobile).
+    """
+    slot_key = _uploader_slot_key(base)
+    slot = int(st.session_state.get(slot_key, 0))
+    widget_key = f"{base}_upload_{slot}"
 
-    file = st.file_uploader(
-        label,
-        accept_multiple_files=False,
-        key=uploader_key,
-        type=["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"],
-    )
-    if file is not None:
-        signature = (file.name, len(_read_upload_bytes(file)))
-        existing = {(f.name, len(_read_upload_bytes(f))) for f in st.session_state[list_key]}
-        if signature not in existing and signature[1] > 0:
-            file.seek(0)
-            st.session_state[list_key].append(file)
-            st.rerun()
-
-    count = len(st.session_state[list_key])
-    if count:
-        _render_upload_previews(
-            st.session_state[list_key],
-            list_key=list_key,
-            title="Added photos",
-            columns=3,
+    if multi:
+        picked = st.file_uploader(
+            label,
+            type=_IMAGE_TYPES,
+            accept_multiple_files=True,
+            key=widget_key,
         )
+        if picked:
+            added = False
+            for uploaded in picked:
+                data = _read_upload_bytes(uploaded)
+                if _add_stored_image(base, uploaded.name, data):
+                    added = True
+            if added:
+                st.session_state[slot_key] = slot + 1
+                st.rerun()
     else:
-        st.caption("No photos added yet.")
-    if count and st.button("Clear all photos", key=f"clear_{list_key}"):
-        st.session_state[list_key] = []
+        picked = st.file_uploader(
+            label,
+            type=_IMAGE_TYPES,
+            accept_multiple_files=False,
+            key=widget_key,
+        )
+        if picked is not None:
+            data = _read_upload_bytes(picked)
+            if _add_stored_image(base, picked.name, data):
+                st.session_state[slot_key] = slot + 1
+                st.rerun()
+
+    _render_upload_previews(base, title=title, min_required=min_required)
+
+    store = _get_image_store(base)
+    if store and st.button("Clear all photos", key=f"clear_{base}"):
+        st.session_state[_image_store_key(base)] = []
+        st.session_state[slot_key] = 0
         st.rerun()
-    return st.session_state[list_key]
+
+    return store
 
 
-def _upload_images(uploaded_files, job_id: str, image_type: str) -> tuple[list[str], list[str]]:
-    """Upload files to GCS. Returns (paths, errors)."""
-    if not uploaded_files:
+def _upload_images(stored_items: list[dict], job_id: str, image_type: str) -> tuple[list[str], list[str]]:
+    """Upload persisted image bytes to GCS. Returns (paths, errors)."""
+    if not stored_items:
         return [], []
     paths = []
     errors = []
-    for i, uploaded_file in enumerate(uploaded_files, start=1):
+    for i, item in enumerate(stored_items, start=1):
+        name = _image_name(item)
         try:
-            ext = Path(uploaded_file.name).suffix.lower() or ".jpeg"
-            image_bytes = _read_upload_bytes(uploaded_file)
+            ext = Path(name).suffix.lower() or ".jpeg"
+            image_bytes = _image_bytes(item)
             if not image_bytes:
-                errors.append(f"{uploaded_file.name}: file is empty")
+                errors.append(f"{name}: file is empty")
                 continue
             path = upload_image(image_bytes, job_id, image_type, i, ext)
             if path:
                 paths.append(path)
             else:
-                errors.append(f"{uploaded_file.name}: upload returned no path")
+                errors.append(f"{name}: upload returned no path")
         except Exception as exc:
-            errors.append(f"{uploaded_file.name}: {exc}")
+            errors.append(f"{name}: {exc}")
     return paths, errors
 
 
@@ -306,11 +382,12 @@ else:
 st.info(image_requirement_label(job_type))
 
 # --- Images OUTSIDE form (Streamlit forms block file upload on submit) ---
-before_files = None
-after_files = None
-inspection_files = None
+before_files: list[dict] = []
+after_files: list[dict] = []
+inspection_files: list[dict] = []
 
 st.markdown("#### Images")
+st.caption("Photos are saved in your session as you add them — they stay until you remove them or save the report.")
 mobile_mode = st.toggle(
     "Mobile mode — upload one photo at a time (use this on Android phone)",
     value=False,
@@ -331,52 +408,52 @@ with st.expander("Tips for Android / phone upload"):
 if job_type == "Inspection":
     min_inspection = IMAGE_RULES["Inspection"]["min_total"]
     st.caption(f"Inspection photos — min {min_inspection} when status is Completed")
-    if mobile_mode:
-        inspection_files = _accumulate_single_upload("inspection_images", "inspection_mobile", "Add inspection photo")
-    else:
-        inspection_files = st.file_uploader(
-            "Upload inspection images",
-            type=["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"],
-            accept_multiple_files=True,
-            key="inspection_images",
-        )
-        n = len(inspection_files) if inspection_files else 0
-        st.caption(f"Selected: {n}/{min_inspection}")
-        if inspection_files:
-            _render_upload_previews(inspection_files, title="Selected inspection photos")
+    inspection_files = _image_uploader_section(
+        "inspection_images",
+        "Add inspection photo" if mobile_mode else "Upload inspection images",
+        multi=not mobile_mode,
+        title="Inspection photos",
+        min_required=min_inspection,
+    )
 elif job_type in ("Maintenance", "Repair"):
     min_each = IMAGE_RULES[job_type]["min_before"]
     if mobile_mode:
         st.caption(f"Before — min {min_each} when Completed")
-        before_files = _accumulate_single_upload("before_images", "before_mobile", "Add BEFORE photo")
+        before_files = _image_uploader_section(
+            "before_images",
+            "Add BEFORE photo",
+            multi=False,
+            title="Before photos",
+            min_required=min_each,
+        )
         st.caption(f"After — min {min_each} when Completed")
-        after_files = _accumulate_single_upload("after_images", "after_mobile", "Add AFTER photo")
+        after_files = _image_uploader_section(
+            "after_images",
+            "Add AFTER photo",
+            multi=False,
+            title="After photos",
+            min_required=min_each,
+        )
     else:
         c1, c2 = st.columns(2)
         with c1:
             st.caption(f"Before — min {min_each} when Completed")
-            before_files = st.file_uploader(
-                "Before images",
-                type=["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"],
-                accept_multiple_files=True,
-                key="before_images",
+            before_files = _image_uploader_section(
+                "before_images",
+                "Upload before images",
+                multi=True,
+                title="Before photos",
+                min_required=min_each,
             )
-            n_before = len(before_files) if before_files else 0
-            st.caption(f"Selected: {n_before}/{min_each}")
-            if before_files:
-                _render_upload_previews(before_files, title="Before photos", columns=2)
         with c2:
             st.caption(f"After — min {min_each} when Completed")
-            after_files = st.file_uploader(
-                "After images",
-                type=["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp"],
-                accept_multiple_files=True,
-                key="after_images",
+            after_files = _image_uploader_section(
+                "after_images",
+                "Upload after images",
+                multi=True,
+                title="After photos",
+                min_required=min_each,
             )
-            n_after = len(after_files) if after_files else 0
-            st.caption(f"Selected: {n_after}/{min_each}")
-            if after_files:
-                _render_upload_previews(after_files, title="After photos", columns=2)
 else:
     st.caption("Select a Job Type above to show image upload fields.")
 
@@ -458,9 +535,9 @@ if submitted:
     require_images = job_status == "Completed"
     is_valid, errors = validate_task_report(record, require_images=False)
 
-    before_count = len(before_files) if before_files else 0
-    after_count = len(after_files) if after_files else 0
-    inspection_count = len(inspection_files) if inspection_files else 0
+    before_count = len(before_files)
+    after_count = len(after_files)
+    inspection_count = len(inspection_files)
 
     errors.extend(
         validate_job_images(
