@@ -46,9 +46,9 @@ JOB_STATUS_OPTIONS = ["Pending", "In Progress", "Completed"]
 
 # Image requirements by job type (when Job Status is Completed)
 IMAGE_RULES = {
-    "Inspection": {"mode": "single", "min_total": 3},
-    "Maintenance": {"mode": "before_after", "min_before": 4, "min_after": 4},
-    "Repair": {"mode": "before_after", "min_before": 4, "min_after": 4},
+    "Inspection": {"mode": "single", "min_total": 3, "max_total": 6},
+    "Maintenance": {"mode": "before_after", "min_before": 4, "min_after": 4, "max_before": 6, "max_after": 6},
+    "Repair": {"mode": "before_after", "min_before": 4, "min_after": 4, "max_before": 6, "max_after": 6},
 }
 
 # Legacy columns removed from schema (stripped on read/write)
@@ -141,11 +141,20 @@ def validate_task_report(record: dict, require_images: bool = False) -> tuple[bo
 
         if rules["mode"] == "single":
             total = len(before) + len(after)
+            max_total = rules.get("max_total", 6)
+            if total > max_total:
+                errors.append(f"Inspection images: maximum {max_total} allowed")
             if total < rules["min_total"]:
                 errors.append(
                     f"Inspection images: {total}/{rules['min_total']} required for Completed status"
                 )
         else:
+            max_before = rules.get("max_before", 6)
+            max_after = rules.get("max_after", 6)
+            if len(before) > max_before:
+                errors.append(f"Before images: maximum {max_before} allowed")
+            if len(after) > max_after:
+                errors.append(f"After images: maximum {max_after} allowed")
             if len(before) < rules["min_before"]:
                 errors.append(
                     f"Before images: {len(before)}/{rules['min_before']} required for Completed status"
@@ -165,25 +174,39 @@ def validate_job_images(
     inspection_count: int = 0,
     require: bool = False,
 ) -> list[str]:
-    """Return image validation errors based on job type."""
-    if not require or not job_type:
+    """Return image validation errors based on job type (limits always; mins when require)."""
+    if not job_type:
         return []
 
     rules = IMAGE_RULES.get(job_type, IMAGE_RULES["Maintenance"])
     errors = []
 
     if rules["mode"] == "single":
-        count = inspection_count
-        if count < rules["min_total"]:
+        max_total = rules.get("max_total", 6)
+        if inspection_count > max_total:
             errors.append(
-                f"Inspection images: {count}/{rules['min_total']} required for Completed status"
+                f"Inspection images: {inspection_count}/{max_total} — maximum {max_total} allowed"
+            )
+        if require and inspection_count < rules["min_total"]:
+            errors.append(
+                f"Inspection images: {inspection_count}/{rules['min_total']} required for Completed status"
             )
     else:
-        if before_count < rules["min_before"]:
+        max_before = rules.get("max_before", 6)
+        max_after = rules.get("max_after", 6)
+        if before_count > max_before:
+            errors.append(
+                f"Before images: {before_count}/{max_before} — maximum {max_before} allowed"
+            )
+        if after_count > max_after:
+            errors.append(
+                f"After images: {after_count}/{max_after} — maximum {max_after} allowed"
+            )
+        if require and before_count < rules["min_before"]:
             errors.append(
                 f"Before images: {before_count}/{rules['min_before']} required for Completed status"
             )
-        if after_count < rules["min_after"]:
+        if require and after_count < rules["min_after"]:
             errors.append(
                 f"After images: {after_count}/{rules['min_after']} required for Completed status"
             )
@@ -197,10 +220,14 @@ def image_requirement_label(job_type: str) -> str:
         return "Select a Job Type to see image requirements."
     rules = IMAGE_RULES.get(job_type, IMAGE_RULES["Maintenance"])
     if rules["mode"] == "single":
-        return f"Inspection: minimum **{rules['min_total']} images** when status is Completed."
+        max_total = rules.get("max_total", 6)
+        return (
+            f"Inspection: **{rules['min_total']}–{max_total} images** when status is Completed "
+            f"(max **{max_total}**)."
+        )
     return (
-        f"Maintenance/Repair: minimum **{rules['min_before']} before** and "
-        f"**{rules['min_after']} after** images when status is Completed."
+        f"Maintenance/Repair: **{rules['min_before']}–{rules['max_before']} before** and "
+        f"**{rules['min_after']}–{rules['max_after']} after** when status is Completed."
     )
 
 
