@@ -37,40 +37,61 @@ _IMAGE_CONTENT_TYPES = {
 }
 
 
+class GCSNotConfiguredError(RuntimeError):
+    """Raised when GCP credentials are missing or invalid."""
+
+
 def _temp_db_path(name: str) -> Path:
     return Path(tempfile.gettempdir()) / name
+
+
+def _normalize_service_account_dict(raw: dict) -> dict:
+    """Fix private_key newlines — required for Streamlit Cloud secrets paste."""
+    info = dict(raw)
+    private_key = info.get("private_key", "")
+    if isinstance(private_key, str) and "\\n" in private_key:
+        info["private_key"] = private_key.replace("\\n", "\n")
+    return info
 
 
 def _get_credentials():
     if GCP_KEY_PATH.exists():
         return service_account.Credentials.from_service_account_file(str(GCP_KEY_PATH))
-    secret_dict = st.secrets.get("gcp_service_account")
-    if secret_dict:
-        return service_account.Credentials.from_service_account_info(secret_dict)
+    try:
+        secret_dict = st.secrets.get("gcp_service_account")
+        if secret_dict:
+            return service_account.Credentials.from_service_account_info(
+                _normalize_service_account_dict(dict(secret_dict))
+            )
+    except Exception:
+        pass
     return None
 
 
 @st.cache_resource
 def get_gcs_client():
     """Initialize and cache Google Cloud Storage client."""
+    credentials = _get_credentials()
+    if not credentials:
+        return None
     try:
-        credentials = _get_credentials()
-        if not credentials:
-            st.error("GCP credentials not found")
-            st.error("Add config/gcp-key.json locally or gcp_service_account in Streamlit secrets")
-            st.stop()
         return storage.Client(credentials=credentials)
-    except Exception as e:
-        st.error(f"Failed to initialize GCS client: {e}")
-        st.stop()
+    except Exception:
+        return None
 
 
 def get_bucket():
-    return get_gcs_client().bucket(BUCKET_NAME)
+    client = get_gcs_client()
+    if client is None:
+        raise GCSNotConfiguredError("GCP credentials not configured")
+    return client.bucket(BUCKET_NAME)
 
 
 def _download_db_bytes(remote_path: str) -> bytes | None:
-    bucket = get_bucket()
+    try:
+        bucket = get_bucket()
+    except GCSNotConfiguredError:
+        return None
     blob = bucket.blob(remote_path)
     if not blob.exists():
         return None
@@ -156,6 +177,10 @@ def _ensure_gcs_schema_current() -> None:
 def download_database() -> pd.DataFrame:
     """Download task_reports table from GCS."""
     try:
+        if get_gcs_client() is None:
+            st.error("Google Cloud is not configured for this app.")
+            st.caption("Set gcp_service_account in Streamlit Cloud Secrets (see README.md).")
+            return pd.DataFrame()
         _ensure_gcs_schema_current()
         conn = _open_remote_db(REMOTE_DB_PATH)
         if conn is None:
@@ -715,8 +740,10 @@ def migrate_gcs_database() -> bool:
 
 def check_gcs_connection() -> bool:
     try:
-        bucket = get_bucket()
-        bucket.reload()
+        client = get_gcs_client()
+        if client is None:
+            return False
+        client.bucket(BUCKET_NAME).reload()
         return True
     except Exception as e:
         st.error(f"GCS Connection Error: {e}")

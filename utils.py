@@ -66,7 +66,7 @@ def render_page_header(title: str, subtitle: str = "") -> None:
     """Page header with logo aligned left and title on the right."""
     logo = logo_display_path()
     if logo:
-        col_logo, col_title = st.columns([1, 4], vertical_alignment="center")
+        col_logo, col_title = st.columns([1, 4])
         with col_logo:
             st.image(logo, use_container_width=True)
         with col_title:
