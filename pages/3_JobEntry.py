@@ -392,7 +392,12 @@ def _upload_images(stored_items: list[dict], job_id: str, image_type: str) -> tu
     return paths, errors
 
 
-regdata_names = get_user_list()
+try:
+    with st.spinner("Loading user list from cloud..."):
+        regdata_names = get_user_list()
+except Exception as exc:
+    st.warning(f"Could not load attendee names: {exc}")
+    regdata_names = []
 
 # --- Job Type (outside form — drives image UI) ---
 st.markdown("#### Job Type")

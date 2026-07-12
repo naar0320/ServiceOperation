@@ -431,7 +431,8 @@ def _render_cloud_database_tab() -> None:
 
 
 try:
-    df = download_database()
+    with st.spinner("Loading reports from cloud..."):
+        df = download_database()
 
     if can_access_cloud_database(user_rank):
         tab_reports, tab_database = st.tabs(["Reports", "Cloud Database"])
