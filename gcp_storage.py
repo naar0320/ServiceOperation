@@ -171,28 +171,71 @@ def _ensure_gcs_schema_current() -> None:
     if needs_migration:
         _migrate_sqlite_file(temp_path)
         _upload_db_file(temp_path, REMOTE_DB_PATH)
+        invalidate_task_reports_cache()
     temp_path.unlink(missing_ok=True)
 
 
-def download_database() -> pd.DataFrame:
+def _ensure_gcs_schema_once() -> None:
+    """Run schema migration at most once per browser session."""
+    if st.session_state.get("gcs_schema_checked"):
+        return
+    _ensure_gcs_schema_current()
+    st.session_state["gcs_schema_checked"] = True
+
+
+def _task_reports_cache_version() -> int:
+    return int(st.session_state.get("task_reports_cache_version", 0))
+
+
+def invalidate_task_reports_cache() -> None:
+    st.session_state["task_reports_cache_version"] = _task_reports_cache_version() + 1
+    _cached_task_reports.clear()
+
+
+def _regdata_list_cache_version() -> int:
+    return int(st.session_state.get("regdata_list_cache_version", 0))
+
+
+def invalidate_regdata_list_cache() -> None:
+    st.session_state["regdata_list_cache_version"] = _regdata_list_cache_version() + 1
+    _cached_user_list.clear()
+
+
+def invalidate_data_caches() -> None:
+    """Clear cached GCS reads (e.g. after login to free memory)."""
+    invalidate_task_reports_cache()
+    invalidate_regdata_list_cache()
+
+
+def _load_task_reports_from_gcs() -> pd.DataFrame:
+    _ensure_gcs_schema_once()
+    conn = _open_remote_db(REMOTE_DB_PATH)
+    if conn is None:
+        return pd.DataFrame()
+    try:
+        df = pd.read_sql_query(f'SELECT * FROM [{TASK_REPORTS_TABLE}]', conn)
+        return _normalize_dataframe(df)
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=90, show_spinner=False)
+def _cached_task_reports(cache_version: int) -> pd.DataFrame:
+    return _load_task_reports_from_gcs()
+
+
+def download_database(*, refresh: bool = False) -> pd.DataFrame:
     """Download task_reports table from GCS."""
     try:
         if get_gcs_client() is None:
             st.error("Google Cloud is not configured for this app.")
             st.caption("Set gcp_service_account in Streamlit Cloud Secrets (see README.md).")
             return pd.DataFrame()
-        _ensure_gcs_schema_current()
-        conn = _open_remote_db(REMOTE_DB_PATH)
-        if conn is None:
-            return pd.DataFrame()
-
-        try:
-            df = pd.read_sql_query(f'SELECT * FROM [{TASK_REPORTS_TABLE}]', conn)
-            return _normalize_dataframe(df)
-        except Exception:
-            return pd.DataFrame()
-        finally:
-            conn.close()
+        if refresh:
+            invalidate_task_reports_cache()
+        return _cached_task_reports(_task_reports_cache_version()).copy()
     except Exception as e:
         st.error(f"Failed to download database: {e}")
         return pd.DataFrame()
@@ -230,7 +273,7 @@ def _write_dataframe_to_db(df: pd.DataFrame, temp_path: Path) -> None:
 def save_task_report(record: dict) -> bool:
     """Append or replace a task report row in GCS."""
     try:
-        df = download_database()
+        df = download_database(refresh=True)
         job_id = str(record.get("Job ID", "")).strip()
 
         if df.empty:
@@ -248,6 +291,7 @@ def save_task_report(record: dict) -> bool:
         _write_dataframe_to_db(df, temp_path)
         _upload_db_file(temp_path, REMOTE_DB_PATH)
         temp_path.unlink(missing_ok=True)
+        invalidate_task_reports_cache()
         return True
     except Exception as e:
         st.error(f"Failed to save task report: {e}")
@@ -280,7 +324,7 @@ def generate_job_id(job_type: str = "Maintenance") -> str:
     date_prefix = today_sg().strftime("%y%m%d")
     prefix = f"{date_prefix}_{type_code}_"
 
-    df = download_database()
+    df = download_database(refresh=True)
     if df.empty or "Job ID" not in df.columns:
         return f"{prefix}001"
 
@@ -485,32 +529,43 @@ def get_technician_list() -> list[str]:
         return []
 
 
+def _load_user_list_from_gcs() -> list[str]:
+    conn = _open_remote_db(REMOTE_REGDATA_PATH)
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info('RegData')")
+        cols = [str(r[1]).strip() for r in (cur.fetchall() or [])]
+        cols_lower = {c.lower(): c for c in cols}
+
+        name_col = None
+        for candidate in ("name", "display_name", "fullname", "user_name"):
+            if candidate in cols_lower:
+                name_col = cols_lower[candidate]
+                break
+        if not name_col:
+            return []
+
+        df = pd.read_sql_query(f'SELECT DISTINCT [{name_col}] AS name FROM RegData ORDER BY name', conn)
+        return [str(n).strip() for n in df["name"].dropna() if str(n).strip()]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_user_list(cache_version: int) -> list[str]:
+    return _load_user_list_from_gcs()
+
+
 def get_user_list() -> list[str]:
     """Load user names from RegData for the Attend by field."""
     try:
-        conn = _open_remote_db(REMOTE_REGDATA_PATH)
-        if conn is None:
+        if get_gcs_client() is None:
             return []
-        try:
-            cur = conn.cursor()
-            cur.execute("PRAGMA table_info('RegData')")
-            cols = [str(r[1]).strip() for r in (cur.fetchall() or [])]
-            cols_lower = {c.lower(): c for c in cols}
-
-            name_col = None
-            for candidate in ("name", "display_name", "fullname", "user_name"):
-                if candidate in cols_lower:
-                    name_col = cols_lower[candidate]
-                    break
-            if not name_col:
-                return []
-
-            df = pd.read_sql_query(f'SELECT DISTINCT [{name_col}] AS name FROM RegData ORDER BY name', conn)
-            return [str(n).strip() for n in df["name"].dropna() if str(n).strip()]
-        except Exception:
-            return []
-        finally:
-            conn.close()
+        return list(_cached_user_list(_regdata_list_cache_version()))
     except Exception:
         return []
 
@@ -697,6 +752,9 @@ def save_gcs_table(
         if remote_path == REMOTE_REGDATA_PATH:
             local_regdata = PROJECT_ROOT / "data" / "regdata.db"
             sync_regdata_from_gcs(local_regdata)
+            invalidate_regdata_list_cache()
+        elif remote_path == REMOTE_DB_PATH:
+            invalidate_task_reports_cache()
 
         return True, f"Saved **{table_name}** to Google Cloud ({len(save_df)} row(s))."
     except Exception as exc:

@@ -157,13 +157,41 @@ def can_access_master_user(rank: int) -> bool:
 
 def can_access_cloud_database(rank: int) -> bool:
     return int(rank or 0) >= 3
+
+
+_HEAVY_SESSION_PREFIXES = (
+    "job_img_store_",
+    "job_img_slot_",
+    "job_entry_",
+    "job_ticket_",
+    "single_pdf_",
+    "cloud_db_editor_",
+)
+
+
+def _clear_heavy_session_state() -> None:
+    """Drop large blobs from session (images, PDFs) to avoid memory crashes."""
+    for key in list(st.session_state.keys()):
+        if any(str(key).startswith(prefix) for prefix in _HEAVY_SESSION_PREFIXES):
+            st.session_state.pop(key, None)
+    try:
+        from gcp_storage import invalidate_data_caches
+
+        invalidate_data_caches()
+    except Exception:
+        pass
+
+
 def _clear_auth_state() -> None:
     st.session_state["is_logged_in"] = False
     st.session_state["auth_user"] = None
     st.session_state.pop("show_change_password", None)
+    _clear_heavy_session_state()
 
 
 def _set_auth_session(user_info: Dict[str, Any]) -> None:
+    _clear_heavy_session_state()
+    st.session_state.pop("show_change_password", None)
     st.session_state["is_logged_in"] = True
     st.session_state["auth_user"] = {
         "user_id": user_info.get("user_id", ""),

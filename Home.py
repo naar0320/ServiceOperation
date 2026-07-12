@@ -23,7 +23,8 @@ def _count_status(df: pd.DataFrame, status: str) -> int:
 
 
 try:
-    df = download_database()
+    with st.spinner("Loading reports from cloud..."):
+        df = download_database()
 
     if df is None or df.empty:
         st.warning("No task reports yet. Log in and create one from Job Entry.")
