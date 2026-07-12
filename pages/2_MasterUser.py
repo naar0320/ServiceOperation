@@ -54,6 +54,25 @@ DETAIL_COLUMNS = [
     "Task Description", "Action", "Remark", "Verify by", "Spare Parts Used",
 ]
 DATE_COLUMNS = ["Create at", "Date"]
+BULK_WARN_WITH_IMAGES = 12
+BULK_MAX_ZIP_MB = 45
+
+
+def _sanitize_job_record(job: dict) -> dict:
+    """Clean pandas NaN and internal sort columns before PDF export."""
+    clean: dict = {}
+    for key, value in job.items():
+        if str(key).startswith("__"):
+            continue
+        if value is None:
+            continue
+        if isinstance(value, float) and pd.isna(value):
+            continue
+        text = str(value).strip()
+        if not text or text.lower() == "nan":
+            continue
+        clean[key] = text if not isinstance(value, (int, float)) else value
+    return clean
 
 
 def _priority_score(value: str) -> int:
@@ -157,7 +176,13 @@ def _job_images(job_id: str, job: dict) -> list[str]:
     return sorted(set(paths))
 
 
-def _generate_pdf(job_data: dict, image_paths: list, include_images: bool = True) -> BytesIO | None:
+def _generate_pdf(
+    job_data: dict,
+    image_paths: list,
+    include_images: bool = True,
+    *,
+    quiet: bool = False,
+) -> BytesIO | None:
     try:
         image_items = []
         if include_images:
@@ -166,39 +191,59 @@ def _generate_pdf(job_data: dict, image_paths: list, include_images: bool = True
                 if img_bytes:
                     image_items.append((image_caption_from_path(path), img_bytes))
         return build_job_report_pdf(
-            job_data,
+            _sanitize_job_record(job_data),
             image_items,
             include_images=include_images,
             generated_at=format_ts_sg(),
         )
     except ImportError:
-        st.error("reportlab not installed — add it to requirements.txt")
+        if not quiet:
+            st.error("reportlab not installed — add it to requirements.txt")
         return None
     except Exception as e:
-        st.error(f"PDF error: {e}")
+        if not quiet:
+            st.error(f"PDF error: {e}")
         return None
 
 
-def _build_pdf_zip(reports_df: pd.DataFrame, include_images: bool) -> BytesIO | None:
+def _build_pdf_zip(
+    reports_df: pd.DataFrame,
+    include_images: bool,
+    progress_bar=None,
+) -> tuple[BytesIO | None, dict]:
     if reports_df.empty:
-        return None
+        return None, {"added": 0, "failed": 0, "errors": []}
 
     zip_buffer = BytesIO()
     added = 0
+    failed = 0
+    errors: list[str] = []
+    total = len(reports_df)
+
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for _, row in reports_df.iterrows():
-            job = row.to_dict()
-            job_id = str(job.get("Job ID", f"report_{added + 1}"))
-            images = _job_images(job_id, job) if include_images else []
-            pdf = _generate_pdf(job, images, include_images=include_images)
-            if pdf:
-                zf.writestr(f"job_report_{job_id}.pdf", pdf.getvalue())
-                added += 1
+        for index, (_, row) in enumerate(reports_df.iterrows(), start=1):
+            job = _sanitize_job_record(row.to_dict())
+            job_id = str(job.get("Job ID", f"report_{index}"))
+            try:
+                images = _job_images(job_id, job) if include_images else []
+                pdf = _generate_pdf(job, images, include_images=include_images, quiet=True)
+                if pdf:
+                    zf.writestr(f"job_report_{job_id}.pdf", pdf.getvalue())
+                    added += 1
+                else:
+                    failed += 1
+                    errors.append(f"{job_id}: PDF could not be built")
+            except Exception as exc:
+                failed += 1
+                errors.append(f"{job_id}: {exc}")
+            if progress_bar is not None:
+                progress_bar.progress(index / total)
 
     if added == 0:
-        return None
+        return None, {"added": 0, "failed": failed, "errors": errors}
+
     zip_buffer.seek(0)
-    return zip_buffer
+    return zip_buffer, {"added": added, "failed": failed, "errors": errors}
 
 
 @st.cache_data(ttl=120, show_spinner="Loading cloud database…")
@@ -245,19 +290,52 @@ def _render_reports_tab(df: pd.DataFrame) -> None:
             )
 
     if not readable.empty:
+        report_count = len(filtered)
+        if include_images and report_count > BULK_WARN_WITH_IMAGES:
+            st.warning(
+                f"Building **{report_count}** PDFs with images may take a long time or hit "
+                f"Streamlit limits. Try a smaller date filter, or uncheck "
+                f"**Include images in PDFs** for faster bulk export."
+            )
+
         if st.button(
-            f"Prepare all PDFs ({len(filtered)} reports)",
+            f"Prepare all PDFs ({report_count} reports)",
             type="primary",
             use_container_width=True,
         ):
-            with st.spinner(f"Building {len(filtered)} PDF(s)…"):
-                zip_data = _build_pdf_zip(filtered, include_images)
-                if zip_data:
-                    st.session_state["report_pdf_zip"] = zip_data.getvalue()
-                    st.session_state["report_pdf_count"] = len(filtered)
+            progress = st.progress(0, text=f"Building PDF 0 / {report_count}…")
+            zip_data, stats = _build_pdf_zip(filtered, include_images, progress_bar=progress)
+            progress.empty()
+
+            if zip_data:
+                zip_bytes = zip_data.getvalue()
+                size_mb = len(zip_bytes) / (1024 * 1024)
+                if size_mb > BULK_MAX_ZIP_MB:
+                    st.error(
+                        f"ZIP is too large ({size_mb:.1f} MB). Filter to fewer reports or turn off "
+                        "**Include images in PDFs**, then try again."
+                    )
                 else:
-                    st.session_state.pop("report_pdf_zip", None)
-                    st.error("Could not create PDF files.")
+                    st.session_state["report_pdf_zip"] = zip_bytes
+                    st.session_state["report_pdf_count"] = stats["added"]
+                    msg = f"Prepared **{stats['added']}** PDF(s) ({size_mb:.1f} MB)."
+                    if stats["failed"]:
+                        msg += f" {stats['failed']} failed."
+                    st.success(msg)
+                    if stats["errors"]:
+                        with st.expander("PDF errors"):
+                            st.code("\n".join(stats["errors"][:20]))
+            else:
+                st.session_state.pop("report_pdf_zip", None)
+                st.error("Could not create PDF files.")
+                if stats.get("errors"):
+                    with st.expander("PDF errors"):
+                        st.code("\n".join(stats["errors"][:20]))
+                else:
+                    st.caption(
+                        "Check that **reportlab** is in requirements.txt on Streamlit Cloud, "
+                        "or try without images."
+                    )
 
         if st.session_state.get("report_pdf_zip"):
             st.download_button(
