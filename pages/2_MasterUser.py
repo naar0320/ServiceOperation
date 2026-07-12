@@ -1,4 +1,3 @@
-import zipfile
 from datetime import timedelta
 from io import BytesIO
 
@@ -39,8 +38,7 @@ render_role_navigation(auth)
 user_rank = int(auth.get("rank", 1) or 1)
 render_page_header(
     "Review & Download Reports",
-    "Filter reports and export PDF / CSV"
-    + (" · Cloud DB for Master User only" if not can_access_cloud_database(user_rank) else " · Cloud DB editable"),
+    "Filter reports and download a single job PDF"
 )
 
 LIST_COLUMNS = [
@@ -54,8 +52,8 @@ DETAIL_COLUMNS = [
     "Task Description", "Action", "Remark", "Verify by", "Spare Parts Used",
 ]
 DATE_COLUMNS = ["Create at", "Date"]
-BULK_WARN_WITH_IMAGES = 12
-BULK_MAX_ZIP_MB = 45
+_IMAGE_THUMB_W = 108
+_IMAGE_PREVIEW_COLS = 4
 
 
 def _sanitize_job_record(job: dict) -> dict:
@@ -176,12 +174,41 @@ def _job_images(job_id: str, job: dict) -> list[str]:
     return sorted(set(paths))
 
 
+def _short_image_name(path: str) -> str:
+    return path.split("/")[-1][:22]
+
+
+def _render_job_image_previews(image_paths: list[str]) -> None:
+    """Small thumbnails — enough to verify photos without full-size display."""
+    if not image_paths:
+        st.caption("No images for this job.")
+        return
+
+    st.markdown(f"**Images** ({len(image_paths)})")
+    per_row = _IMAGE_PREVIEW_COLS
+    for row_start in range(0, len(image_paths), per_row):
+        row_paths = image_paths[row_start : row_start + per_row]
+        cols = st.columns(len(row_paths))
+        for col_idx, path in enumerate(row_paths):
+            global_idx = row_start + col_idx
+            with cols[col_idx]:
+                img_bytes = download_image(path)
+                kind = image_caption_from_path(path).split("—")[0].strip()
+                if img_bytes:
+                    st.image(
+                        img_bytes,
+                        width=_IMAGE_THUMB_W,
+                        caption=f"#{global_idx + 1} {kind}",
+                    )
+                else:
+                    st.caption(f"#{global_idx + 1} {kind}")
+                st.caption(_short_image_name(path))
+
+
 def _generate_pdf(
     job_data: dict,
     image_paths: list,
     include_images: bool = True,
-    *,
-    quiet: bool = False,
 ) -> BytesIO | None:
     try:
         image_items = []
@@ -197,53 +224,11 @@ def _generate_pdf(
             generated_at=format_ts_sg(),
         )
     except ImportError:
-        if not quiet:
-            st.error("reportlab not installed — add it to requirements.txt")
+        st.error("reportlab not installed — add it to requirements.txt")
         return None
     except Exception as e:
-        if not quiet:
-            st.error(f"PDF error: {e}")
+        st.error(f"PDF error: {e}")
         return None
-
-
-def _build_pdf_zip(
-    reports_df: pd.DataFrame,
-    include_images: bool,
-    progress_bar=None,
-) -> tuple[BytesIO | None, dict]:
-    if reports_df.empty:
-        return None, {"added": 0, "failed": 0, "errors": []}
-
-    zip_buffer = BytesIO()
-    added = 0
-    failed = 0
-    errors: list[str] = []
-    total = len(reports_df)
-
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for index, (_, row) in enumerate(reports_df.iterrows(), start=1):
-            job = _sanitize_job_record(row.to_dict())
-            job_id = str(job.get("Job ID", f"report_{index}"))
-            try:
-                images = _job_images(job_id, job) if include_images else []
-                pdf = _generate_pdf(job, images, include_images=include_images, quiet=True)
-                if pdf:
-                    zf.writestr(f"job_report_{job_id}.pdf", pdf.getvalue())
-                    added += 1
-                else:
-                    failed += 1
-                    errors.append(f"{job_id}: PDF could not be built")
-            except Exception as exc:
-                failed += 1
-                errors.append(f"{job_id}: {exc}")
-            if progress_bar is not None:
-                progress_bar.progress(index / total)
-
-    if added == 0:
-        return None, {"added": 0, "failed": failed, "errors": errors}
-
-    zip_buffer.seek(0)
-    return zip_buffer, {"added": added, "failed": failed, "errors": errors}
 
 
 @st.cache_data(ttl=120, show_spinner="Loading cloud database…")
@@ -259,93 +244,12 @@ def _render_reports_tab(df: pd.DataFrame) -> None:
     filtered = _apply_report_filters(df)
     readable = _sorted_view(filtered)
 
-    filter_key = (
-        f"{len(filtered)}|{len(readable)}|"
-        f"{readable['Job ID'].astype(str).tolist() if 'Job ID' in readable.columns and not readable.empty else ''}"
-    )
-    if st.session_state.get("report_pdf_filter_key") != filter_key:
-        st.session_state.pop("report_pdf_zip", None)
-        st.session_state.pop("report_pdf_count", None)
-        st.session_state["report_pdf_filter_key"] = filter_key
-
     if "Job Status" in filtered.columns:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total", len(filtered))
         c2.metric("Pending", len(filtered[filtered["Job Status"] == "Pending"]))
         c3.metric("In Progress", len(filtered[filtered["Job Status"] == "In Progress"]))
         c4.metric("Completed", len(filtered[filtered["Job Status"] == "Completed"]))
-
-    st.markdown("#### Download")
-    d1, d2 = st.columns([2, 2])
-    with d1:
-        include_images = st.checkbox("Include images in PDFs", value=True)
-    with d2:
-        if not readable.empty:
-            st.download_button(
-                "Download table (CSV)",
-                data=readable.to_csv(index=False),
-                file_name=f"task_reports_{today_sg().isoformat()}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-    if not readable.empty:
-        report_count = len(filtered)
-        if include_images and report_count > BULK_WARN_WITH_IMAGES:
-            st.warning(
-                f"Building **{report_count}** PDFs with images may take a long time or hit "
-                f"Streamlit limits. Try a smaller date filter, or uncheck "
-                f"**Include images in PDFs** for faster bulk export."
-            )
-
-        if st.button(
-            f"Prepare all PDFs ({report_count} reports)",
-            type="primary",
-            use_container_width=True,
-        ):
-            progress = st.progress(0, text=f"Building PDF 0 / {report_count}…")
-            zip_data, stats = _build_pdf_zip(filtered, include_images, progress_bar=progress)
-            progress.empty()
-
-            if zip_data:
-                zip_bytes = zip_data.getvalue()
-                size_mb = len(zip_bytes) / (1024 * 1024)
-                if size_mb > BULK_MAX_ZIP_MB:
-                    st.error(
-                        f"ZIP is too large ({size_mb:.1f} MB). Filter to fewer reports or turn off "
-                        "**Include images in PDFs**, then try again."
-                    )
-                else:
-                    st.session_state["report_pdf_zip"] = zip_bytes
-                    st.session_state["report_pdf_count"] = stats["added"]
-                    msg = f"Prepared **{stats['added']}** PDF(s) ({size_mb:.1f} MB)."
-                    if stats["failed"]:
-                        msg += f" {stats['failed']} failed."
-                    st.success(msg)
-                    if stats["errors"]:
-                        with st.expander("PDF errors"):
-                            st.code("\n".join(stats["errors"][:20]))
-            else:
-                st.session_state.pop("report_pdf_zip", None)
-                st.error("Could not create PDF files.")
-                if stats.get("errors"):
-                    with st.expander("PDF errors"):
-                        st.code("\n".join(stats["errors"][:20]))
-                else:
-                    st.caption(
-                        "Check that **reportlab** is in requirements.txt on Streamlit Cloud, "
-                        "or try without images."
-                    )
-
-        if st.session_state.get("report_pdf_zip"):
-            st.download_button(
-                f"Download ZIP — {st.session_state.get('report_pdf_count', 0)} PDF(s) ready",
-                data=st.session_state["report_pdf_zip"],
-                file_name=f"job_reports_{today_sg().isoformat()}.zip",
-                mime="application/zip",
-                use_container_width=True,
-            )
-            st.caption("Click **Prepare all PDFs** again after changing filters.")
 
     st.markdown("#### Report list")
     if readable.empty:
@@ -365,25 +269,14 @@ def _render_reports_tab(df: pd.DataFrame) -> None:
             return
         job = row.iloc[0].to_dict()
 
-        left, right = st.columns([1, 1])
-        with left:
-            for col in DETAIL_COLUMNS:
-                if col in job and job[col] not in (None, ""):
-                    st.markdown(f"**{col}:** {job[col]}")
+        for col in DETAIL_COLUMNS:
+            if col in job and job[col] not in (None, ""):
+                st.markdown(f"**{col}:** {job[col]}")
 
         all_images = _job_images(selected, job)
-        with right:
-            st.markdown("**Images**")
-            if all_images:
-                for path in all_images[:6]:
-                    img_bytes = download_image(path)
-                    if img_bytes:
-                        st.image(img_bytes, caption=path.split("/")[-1], use_container_width=True)
-                if len(all_images) > 6:
-                    st.caption(f"+ {len(all_images) - 6} more image(s) included in PDF")
-            else:
-                st.caption("No images for this job.")
+        _render_job_image_previews(all_images)
 
+        include_images = st.checkbox("Include images in PDF", value=True, key=f"pdf_images_{selected}")
         pdf = _generate_pdf(job, all_images, include_images=include_images)
         if pdf:
             st.download_button(
