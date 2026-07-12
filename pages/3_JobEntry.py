@@ -225,10 +225,12 @@ def _get_image_store(base: str) -> list[dict]:
     return st.session_state[key]
 
 
-def _add_stored_image(base: str, name: str, data: bytes) -> bool:
+def _add_stored_image(base: str, name: str, data: bytes, max_count: int | None = None) -> bool:
     if not data:
         return False
     store = _get_image_store(base)
+    if max_count is not None and len(store) >= max_count:
+        return False
     sig = _image_signature(name, data)
     if any(item["sig"] == sig for item in store):
         return False
@@ -249,6 +251,7 @@ def _render_upload_previews(
     *,
     title: str = "Uploaded photos",
     min_required: int | None = None,
+    max_allowed: int | None = None,
 ) -> None:
     """Small thumbnails — enough to verify photos without full-size display."""
     store = _get_image_store(base)
@@ -257,8 +260,10 @@ def _render_upload_previews(
         st.caption("No photos added yet.")
         return
 
-    if min_required is not None:
-        st.caption(f"**{count} / {min_required}** photo{'s' if min_required != 1 else ''} added")
+    if max_allowed is not None:
+        st.caption(f"**{count} / {max_allowed}** photo{'s' if max_allowed != 1 else ''}")
+    elif min_required is not None:
+        st.caption(f"**{count} / {min_required}** minimum when Completed")
 
     st.markdown(f"**{title}** — tap **Remove** to delete a photo")
     per_row = _PREVIEW_COLS
@@ -296,6 +301,7 @@ def _image_uploader_section(
     multi: bool,
     title: str,
     min_required: int | None = None,
+    max_allowed: int | None = None,
 ) -> list[dict]:
     """
     Copy uploads into session state immediately so photos survive page reruns.
@@ -304,8 +310,12 @@ def _image_uploader_section(
     slot_key = _uploader_slot_key(base)
     slot = int(st.session_state.get(slot_key, 0))
     widget_key = f"{base}_upload_{slot}"
+    store = _get_image_store(base)
+    at_max = max_allowed is not None and len(store) >= max_allowed
 
-    if multi:
+    if at_max:
+        st.caption(f"Maximum **{max_allowed}** photos reached. Remove one to add another.")
+    elif multi:
         picked = st.file_uploader(
             label,
             type=_IMAGE_TYPES,
@@ -314,11 +324,17 @@ def _image_uploader_section(
         )
         if picked:
             added = False
+            skipped_max = False
             for uploaded in picked:
+                if max_allowed is not None and len(_get_image_store(base)) >= max_allowed:
+                    skipped_max = True
+                    break
                 data = _read_upload_bytes(uploaded)
-                if _add_stored_image(base, uploaded.name, data):
+                if _add_stored_image(base, uploaded.name, data, max_count=max_allowed):
                     added = True
-            if added:
+            if skipped_max:
+                st.warning(f"Only up to **{max_allowed}** photos allowed for this section.")
+            if added or skipped_max:
                 st.session_state[slot_key] = slot + 1
                 st.rerun()
     else:
@@ -330,11 +346,18 @@ def _image_uploader_section(
         )
         if picked is not None:
             data = _read_upload_bytes(picked)
-            if _add_stored_image(base, picked.name, data):
+            if _add_stored_image(base, picked.name, data, max_count=max_allowed):
                 st.session_state[slot_key] = slot + 1
                 st.rerun()
+            elif max_allowed is not None:
+                st.warning(f"Maximum **{max_allowed}** photos allowed for this section.")
 
-    _render_upload_previews(base, title=title, min_required=min_required)
+    _render_upload_previews(
+        base,
+        title=title,
+        min_required=min_required,
+        max_allowed=max_allowed,
+    )
 
     store = _get_image_store(base)
     if store and st.button("Clear all photos", key=f"clear_{base}"):
@@ -406,53 +429,62 @@ with st.expander("Tips for Android / phone upload"):
     )
 
 if job_type == "Inspection":
-    min_inspection = IMAGE_RULES["Inspection"]["min_total"]
-    st.caption(f"Inspection photos — min {min_inspection} when status is Completed")
+    rules = IMAGE_RULES["Inspection"]
+    min_inspection = rules["min_total"]
+    max_inspection = rules.get("max_total", 6)
+    st.caption(f"Inspection photos — max {max_inspection} (min {min_inspection} when Completed)")
     inspection_files = _image_uploader_section(
         "inspection_images",
         "Add inspection photo" if mobile_mode else "Upload inspection images",
         multi=not mobile_mode,
         title="Inspection photos",
         min_required=min_inspection,
+        max_allowed=max_inspection,
     )
 elif job_type in ("Maintenance", "Repair"):
-    min_each = IMAGE_RULES[job_type]["min_before"]
+    rules = IMAGE_RULES[job_type]
+    min_each = rules["min_before"]
+    max_each = rules.get("max_before", 6)
     if mobile_mode:
-        st.caption(f"Before — min {min_each} when Completed")
+        st.caption(f"Before — max {max_each} (min {min_each} when Completed)")
         before_files = _image_uploader_section(
             "before_images",
             "Add BEFORE photo",
             multi=False,
             title="Before photos",
             min_required=min_each,
+            max_allowed=max_each,
         )
-        st.caption(f"After — min {min_each} when Completed")
+        st.caption(f"After — max {max_each} (min {min_each} when Completed)")
         after_files = _image_uploader_section(
             "after_images",
             "Add AFTER photo",
             multi=False,
             title="After photos",
             min_required=min_each,
+            max_allowed=max_each,
         )
     else:
         c1, c2 = st.columns(2)
         with c1:
-            st.caption(f"Before — min {min_each} when Completed")
+            st.caption(f"Before — max {max_each} (min {min_each} when Completed)")
             before_files = _image_uploader_section(
                 "before_images",
                 "Upload before images",
                 multi=True,
                 title="Before photos",
                 min_required=min_each,
+                max_allowed=max_each,
             )
         with c2:
-            st.caption(f"After — min {min_each} when Completed")
+            st.caption(f"After — max {max_each} (min {min_each} when Completed)")
             after_files = _image_uploader_section(
                 "after_images",
                 "Upload after images",
                 multi=True,
                 title="After photos",
                 min_required=min_each,
+                max_allowed=max_each,
             )
 else:
     st.caption("Select a Job Type above to show image upload fields.")
