@@ -14,7 +14,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Image as RLImage
-from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 APP_ROOT = Path(__file__).resolve().parent
 LOGO_CANDIDATES = (
@@ -341,7 +341,7 @@ def _append_image_sections(
                 Spacer(1, 0.1 * inch),
                 _image_grid_table(chunk, image_h=image_h, caption_style=caption_style),
             ]
-            elements.append(KeepTogether(page_block))
+            elements.extend(page_block)
 
 
 def _load_logo_bytes() -> bytes | None:
@@ -400,6 +400,23 @@ def _report_header_block(
     return _full_width_wrapper(title_block)
 
 
+def _is_blank_value(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float):
+        import math
+        if math.isnan(value):
+            return True
+    text = str(value).strip()
+    return text == "" or text.lower() == "nan"
+
+
+def _field_text(value) -> str:
+    if _is_blank_value(value):
+        return ""
+    return str(value).strip()
+
+
 def _details_table(
     job_data: dict,
     *,
@@ -411,18 +428,18 @@ def _details_table(
     ]
 
     for col in DETAIL_COLUMNS:
-        if col in job_data and job_data[col] not in (None, ""):
+        if col in job_data and not _is_blank_value(job_data[col]):
             rows.append([
                 _text_paragraph(col, label_style),
-                _text_paragraph(str(job_data[col]), value_style),
+                _text_paragraph(_field_text(job_data[col]), value_style),
             ])
 
     for key, value in job_data.items():
-        if key in DETAIL_COLUMNS or str(key).startswith("__") or value in (None, ""):
+        if key in DETAIL_COLUMNS or str(key).startswith("__") or _is_blank_value(value):
             continue
         rows.append([
             _text_paragraph(str(key), label_style),
-            _text_paragraph(str(value), value_style),
+            _text_paragraph(_field_text(value), value_style),
         ])
 
     table = Table(rows, colWidths=[LABEL_WIDTH, VALUE_WIDTH], repeatRows=1)
