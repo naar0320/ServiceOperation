@@ -51,13 +51,16 @@ LABEL_WIDTH = 1.8 * inch
 VALUE_WIDTH = CONTENT_WIDTH - LABEL_WIDTH
 
 GRID_COLS = 2
-IMAGES_PER_PAGE = 8  # 2 columns × up to 4 rows per page
+IMAGES_PER_PAGE = 6  # 2 columns × up to 3 rows — fits A4 safely
+MAX_IMAGES_PER_REPORT = 14  # e.g. 7 before + 7 after (legacy) or 6+6
+PDF_IMAGE_MAX_PX = 1100  # resize large phone photos before embedding
+PDF_IMAGE_JPEG_QUALITY = 72
 REPORT_TOP_MARGIN = 0.6 * inch
 REPORT_BOTTOM_MARGIN = 0.55 * inch
 IMAGE_CAPTION_H = 0.22 * inch
 IMAGE_CELL_EXTRA = 14
 IMAGE_H_MAX = 2.35 * inch
-IMAGE_H_MIN = 0.48 * inch
+IMAGE_H_MIN = 0.55 * inch
 
 IMAGE_PAGE_LABELS = {
     "Before": "Before Images",
@@ -96,6 +99,47 @@ def _full_width_wrapper(flowable, *, left: int = 0, right: int = 0) -> Table:
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     return wrapper
+
+
+def prepare_image_for_pdf(img_bytes: bytes) -> bytes:
+    """
+    Shrink and re-encode images so multi-photo PDFs stay within Streamlit memory limits.
+    Phone photos are often 3–8 MB each; 14 of those can crash the app.
+    """
+    if not img_bytes:
+        return b""
+    try:
+        from PIL import Image
+
+        resample = getattr(Image, "Resampling", Image).LANCZOS
+        with Image.open(BytesIO(img_bytes)) as img:
+            img = img.convert("RGB")
+            w, h = img.size
+            longest = max(w, h)
+            if longest > PDF_IMAGE_MAX_PX:
+                scale = PDF_IMAGE_MAX_PX / float(longest)
+                img = img.resize(
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    resample,
+                )
+            out = BytesIO()
+            img.save(out, format="JPEG", quality=PDF_IMAGE_JPEG_QUALITY, optimize=True)
+            return out.getvalue()
+    except Exception:
+        return img_bytes
+
+
+def prepare_image_items_for_pdf(
+    image_items: list[tuple[str, bytes]],
+    *,
+    max_images: int = MAX_IMAGES_PER_REPORT,
+) -> list[tuple[str, bytes]]:
+    prepared: list[tuple[str, bytes]] = []
+    for caption, raw in image_items[:max_images]:
+        compressed = prepare_image_for_pdf(raw)
+        if compressed:
+            prepared.append((caption, compressed))
+    return prepared
 
 
 def _scaled_image(img_bytes: bytes, max_width: float, max_height: float) -> RLImage:
@@ -307,7 +351,7 @@ def _append_image_sections(
     subtitle_style: ParagraphStyle,
     caption_style: ParagraphStyle,
 ) -> None:
-    """Render Before, After, etc. on separate pages; split when a section has >8 photos."""
+    """Render Before, After, etc. on separate pages; split when a section has >6 photos."""
     groups = _group_image_items(image_items)
     if not groups:
         return
@@ -541,9 +585,10 @@ def build_job_report_pdf(
     ]
 
     if include_images and image_items:
+        prepared = prepare_image_items_for_pdf(image_items)
         _append_image_sections(
             elements,
-            image_items[:16],
+            prepared,
             job_id,
             section_style=section_style,
             subtitle_style=subtitle_style,
