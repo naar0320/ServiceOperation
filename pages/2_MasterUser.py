@@ -17,7 +17,7 @@ from gcp_storage import (
     save_gcs_table,
 )
 from database_schema import TASK_REPORTS_TABLE
-from pdf_report import build_job_report_pdf, image_caption_from_path
+from pdf_report import build_job_report_pdf, image_caption_from_path, prepare_image_for_pdf
 from utils import (
     format_ts_sg,
     get_page_icon,
@@ -168,14 +168,34 @@ def _apply_report_filters(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _job_images(job_id: str, job: dict) -> list[str]:
-    paths = list_images_for_job(job_id)
-    paths += parse_image_paths(job.get("Before Images", ""))
+    """Prefer stored DB paths; fall back to GCS listing only if paths are empty."""
+    paths = parse_image_paths(job.get("Before Images", ""))
     paths += parse_image_paths(job.get("After Images", ""))
-    return sorted(set(paths))
+    if paths:
+        return sorted(set(paths))
+    return list_images_for_job(job_id)
 
 
 def _short_image_name(path: str) -> str:
     return path.split("/")[-1][:22]
+
+
+def _preview_thumb_bytes(img_bytes: bytes) -> bytes:
+    """Tiny JPEG for on-screen preview — avoids loading full phone photos into the browser."""
+    if not img_bytes:
+        return b""
+    try:
+        from PIL import Image
+
+        resample = getattr(Image, "Resampling", Image).LANCZOS
+        with Image.open(BytesIO(img_bytes)) as img:
+            img = img.convert("RGB")
+            img.thumbnail((220, 220), resample)
+            out = BytesIO()
+            img.save(out, format="JPEG", quality=55, optimize=True)
+            return out.getvalue()
+    except Exception:
+        return prepare_image_for_pdf(img_bytes)
 
 
 def _render_job_image_previews(image_paths: list[str]) -> None:
@@ -185,6 +205,7 @@ def _render_job_image_previews(image_paths: list[str]) -> None:
         return
 
     st.markdown(f"**Images** ({len(image_paths)})")
+    st.caption("Preview only — PDF uses compressed copies of these photos.")
     per_row = _IMAGE_PREVIEW_COLS
     for row_start in range(0, len(image_paths), per_row):
         row_paths = image_paths[row_start : row_start + per_row]
@@ -194,9 +215,10 @@ def _render_job_image_previews(image_paths: list[str]) -> None:
             with cols[col_idx]:
                 img_bytes = download_image(path)
                 kind = image_caption_from_path(path).split("—")[0].strip()
-                if img_bytes:
+                thumb = _preview_thumb_bytes(img_bytes) if img_bytes else b""
+                if thumb:
                     st.image(
-                        img_bytes,
+                        thumb,
                         width=_IMAGE_THUMB_W,
                         caption=f"#{global_idx + 1} {kind}",
                     )
@@ -276,14 +298,39 @@ def _render_reports_tab(df: pd.DataFrame) -> None:
         all_images = _job_images(selected, job)
         _render_job_image_previews(all_images)
 
-        include_images = st.checkbox("Include images in PDF", value=True, key=f"pdf_images_{selected}")
-        pdf = _generate_pdf(job, all_images, include_images=include_images)
-        if pdf:
+        include_images = st.checkbox(
+            "Include images in PDF",
+            value=True,
+            key=f"pdf_images_{selected}",
+        )
+        if include_images and len(all_images) >= 10:
+            st.caption(
+                f"{len(all_images)} photos will be compressed for the PDF "
+                "(this may take a short while)."
+            )
+
+        pdf_key = f"single_pdf_{selected}_{include_images}_{len(all_images)}"
+        if st.session_state.get("single_pdf_key") != pdf_key:
+            st.session_state.pop("single_pdf_bytes", None)
+            st.session_state["single_pdf_key"] = pdf_key
+
+        if st.button("Generate PDF", type="primary", key=f"gen_pdf_{selected}"):
+            with st.spinner("Building PDF…"):
+                pdf = _generate_pdf(job, all_images, include_images=include_images)
+                if pdf:
+                    st.session_state["single_pdf_bytes"] = pdf.getvalue()
+                    st.success("PDF ready — download below.")
+                else:
+                    st.session_state.pop("single_pdf_bytes", None)
+
+        pdf_bytes = st.session_state.get("single_pdf_bytes")
+        if pdf_bytes:
             st.download_button(
                 f"Download PDF — {selected}",
-                data=pdf,
+                data=pdf_bytes,
                 file_name=f"job_report_{selected}.pdf",
                 mime="application/pdf",
+                use_container_width=True,
             )
 
 
